@@ -10,8 +10,34 @@ fi
 
 IMAGE_NAME="claude-code"
 
+WAS_MACHINE_RUNNING=true
+if [[ "$(uname)" == "Darwin" ]]; then
+    if ! command -v podman &>/dev/null; then
+        echo "Error: podman command not found. Please install Podman first (e.g. 'brew install podman')."
+        exit 1
+    fi
+    MACHINE_STATE=$(podman machine inspect --format '{{.State}}' 2>/dev/null | tr -d '[:space:]' || echo "not-found")
+    if [[ "$MACHINE_STATE" != "running" ]]; then
+        WAS_MACHINE_RUNNING=false
+        if [[ "$MACHINE_STATE" == "not-found" ]]; then
+            echo "Error: No Podman machine found. Please run 'podman machine init' first."
+            exit 1
+        fi
+        echo "Starting Podman machine..."
+        podman machine start
+    fi
+fi
+
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+cleanup() {
+    rm -rf "$TMPDIR"
+    if [[ "$WAS_MACHINE_RUNNING" == "false" ]]; then
+        echo "Stopping Podman machine..."
+        podman machine stop
+    fi
+}
+trap cleanup EXIT
+
 
 cat > "$TMPDIR/Containerfile" << 'EOF'
 FROM alpine:3.22
