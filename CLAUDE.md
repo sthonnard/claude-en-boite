@@ -6,20 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repo contains two shell scripts for running Claude Code inside a rootless Podman container, authenticated via Azure AI Foundry (Eurocontrol's managed AI gateway).
 
-- `install_claude_podman.sh` — builds a `claude-code` Podman image from Alpine Linux with Node.js and Claude Code CLI installed.
-- `claude_podman.sh` — fetches an Azure access token and launches a Claude Code session in the container, mounting the current directory as `/workspace`.
+- `install-claude-podman.sh` — builds a `claude-code` Podman image from Alpine Linux with Node.js and Claude Code CLI installed.
+- `claude-podman.sh` — fetches an Azure access token and launches a Claude Code session in the container, mounting the current directory as `/workspace`.
 
 ## Usage
 
 ```bash
 # One-time: build the container image
-./install_claude_podman.sh
+./install-claude-podman.sh
 
 # Run Claude Code in a container
-./claude_podman.sh [claude-args...]
+./claude-podman.sh [claude-args...]
 ```
 
-`claude_podman.sh` requires `az` (Azure CLI) to be installed and authenticated (`az login`). It fetches a Cognitive Services token and passes it to the container via `ANTHROPIC_FOUNDRY_AUTH_TOKEN`.
+`claude-podman.sh` requires `az` (Azure CLI) to be installed and authenticated (`az login`). It fetches a Cognitive Services token and passes it to the container via `ANTHROPIC_FOUNDRY_AUTH_TOKEN`.
 
 ## Key design points
 

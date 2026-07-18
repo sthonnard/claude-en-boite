@@ -1,4 +1,4 @@
-# claude-podman
+# claude-en-boite
 
 Run [Claude Code](https://claude.ai/code) inside a rootless Podman container, authenticated via Azure AI Foundry.
 
@@ -6,18 +6,21 @@ Run [Claude Code](https://claude.ai/code) inside a rootless Podman container, au
 
 This tool requires **Podman** and the **Azure CLI**. Follow the instructions below to install them:
 
+> [!NOTE]
+> **Windows Users**: The scripts in this repository are written for Unix/macOS environments. If you are running on Windows, you can ask Claude to adapt the bash scripts (`install-claude-podman.sh` and `claude-podman.sh`) to PowerShell or Batch scripts.
+
 ### 1. Podman
 * **macOS** (via Homebrew):
   ```bash
   brew install podman
   podman machine init
   ```
-  *(Note: The `claude_podman` script will automatically start the Podman machine if it is stopped, and stop it once the session ends.)*
+  *(Note: The `claude-podman` script will automatically start the Podman machine if it is stopped, and stop it once the session ends.)*
 * **Ubuntu / Debian**:
   ```bash
   sudo apt-get update && sudo apt-get install -y podman
   ```
-  *(Note: `install_claude_podman.sh` will automatically attempt to install it on Debian/Ubuntu systems if it is missing)*
+  *(Note: `install-claude-podman.sh` will automatically attempt to install it on Debian/Ubuntu systems if it is missing)*
 
 ### 2. Azure CLI
 * **macOS** (via Homebrew):
@@ -45,17 +48,17 @@ export ANTHROPIC_FOUNDRY_BASE_URL="https://blablabla-ai-gate.azure-api.net/ai/an
 Build the container image once:
 
 ```bash
-./install_claude_podman.sh
+./install-claude-podman.sh
 ```
 
-This creates a local `claude-code` image based on Alpine Linux with Node.js and the Claude Code CLI, and installs a `claude_podman` symlink into `~/.local/bin/` so the command is available system-wide.
+This creates a local `claude-code` image based on Alpine Linux with Node.js and the Claude Code CLI, and installs a `claude-podman` symlink into `~/.local/bin/` so the command is available system-wide.
 
 ## Usage
 
 From any project directory:
 
 ```bash
-claude_podman
+claude-podman
 ```
 
 The script:
@@ -67,7 +70,7 @@ The script:
 Any extra arguments are forwarded to `claude`:
 
 ```bash
-claude_podman "explain this codebase"
+claude-podman "explain this codebase"
 ```
 
 ## How it works

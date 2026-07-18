@@ -43,8 +43,8 @@ echo "Building image '${IMAGE_NAME}' from Alpine Linux..."
 podman build -t "$IMAGE_NAME" "$TMPDIR"
 
 mkdir -p ~/.local/bin
-ln -sf "$SCRIPT_DIR/claude_podman.sh" ~/.local/bin/claude_podman
+ln -sf "$SCRIPT_DIR/claude-podman.sh" ~/.local/bin/claude-podman
 
 echo ""
 echo "Image '${IMAGE_NAME}' built successfully."
-echo "Run 'claude_podman' from anywhere to start."
+echo "Run 'claude-podman' from anywhere to start."
