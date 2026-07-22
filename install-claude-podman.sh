@@ -69,7 +69,10 @@ RUN apk add --no-cache \
     curl \
     nodejs \
     npm \
-    ca-certificates
+    python3 \
+    py3-pip \
+    ca-certificates && \
+    ln -sf /usr/bin/python3 /usr/bin/python
 
 RUN adduser -D -u 1000 -s /bin/bash claude
 

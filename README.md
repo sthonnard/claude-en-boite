@@ -51,7 +51,7 @@ Build the container image once:
 ./install-claude-podman.sh
 ```
 
-This creates a local `claude-code` image based on Alpine Linux with Node.js and the Claude Code CLI, and installs a `claude-podman` symlink into `~/.local/bin/` so the command is available system-wide.
+This creates a local `claude-code` image based on Alpine Linux with Node.js, Python, and the Claude Code CLI, and installs a `claude-podman` symlink into `~/.local/bin/` so the command is available system-wide.
 
 ## Usage
 
