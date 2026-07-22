@@ -99,8 +99,18 @@ RUN apk add --no-cache \
     npm \
     python3 \
     py3-pip \
+    py3-setuptools \
+    py3-wheel \
+    py3-lxml \
+    py3-pillow \
+    build-base \
+    python3-dev \
     ca-certificates && \
-    ln -sf /usr/bin/python3 /usr/bin/python
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 
 RUN npm install -g \
     @modelcontextprotocol/server-filesystem \

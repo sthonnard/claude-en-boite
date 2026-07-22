@@ -177,5 +177,6 @@ podman run --rm -it \
     -e CLAUDE_CODE_USE_FOUNDRY=1 \
     -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
     -e ANTHROPIC_FOUNDRY_AUTH_TOKEN="$AZURE_TOKEN" \
+    -e PIP_BREAK_SYSTEM_PACKAGES=1 \
     claude-code \
     claude --dangerously-skip-permissions --model claude-sonnet-4-6 "$@"
