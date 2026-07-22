@@ -8,7 +8,8 @@ if ! command -v podman &>/dev/null; then
     sudo apt-get update -qq && sudo apt-get install -y podman
 fi
 
-IMAGE_NAME="claude-code"
+PROXY_IMAGE_NAME="claude-proxy"
+CODE_IMAGE_NAME="claude-code"
 
 WAS_MACHINE_RUNNING=true
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -38,8 +39,29 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# 1. Build claude-proxy image
+mkdir -p "$TMPDIR/proxy"
+cp "$SCRIPT_DIR/network-proxy.js" "$TMPDIR/proxy/"
 
-cat > "$TMPDIR/Containerfile" << 'EOF'
+cat > "$TMPDIR/proxy/Containerfile" << 'EOF'
+FROM alpine:3.22
+
+RUN apk add --no-cache nodejs
+
+COPY network-proxy.js /usr/local/bin/network-proxy.js
+RUN chmod +x /usr/local/bin/network-proxy.js
+
+EXPOSE 8888
+ENTRYPOINT ["node", "/usr/local/bin/network-proxy.js"]
+EOF
+
+echo "Building proxy image '${PROXY_IMAGE_NAME}'..."
+podman build -t "$PROXY_IMAGE_NAME" "$TMPDIR/proxy"
+
+# 2. Build claude-code image
+mkdir -p "$TMPDIR/code"
+
+cat > "$TMPDIR/code/Containerfile" << 'EOF'
 FROM alpine:3.22
 
 RUN apk add --no-cache \
@@ -65,12 +87,12 @@ ENV PATH="/home/claude/.local/bin:$PATH"
 CMD ["/bin/bash"]
 EOF
 
-echo "Building image '${IMAGE_NAME}' from Alpine Linux..."
-podman build -t "$IMAGE_NAME" "$TMPDIR"
+echo "Building agent image '${CODE_IMAGE_NAME}' from Alpine Linux..."
+podman build -t "$CODE_IMAGE_NAME" "$TMPDIR/code"
 
 mkdir -p ~/.local/bin
 ln -sf "$SCRIPT_DIR/claude-podman.sh" ~/.local/bin/claude-podman
 
 echo ""
-echo "Image '${IMAGE_NAME}' built successfully."
+echo "Images '${PROXY_IMAGE_NAME}' and '${CODE_IMAGE_NAME}' built successfully."
 echo "Run 'claude-podman' from anywhere to start."

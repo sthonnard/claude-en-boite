@@ -28,3 +28,6 @@ This repo contains two shell scripts for running Claude Code inside a rootless P
 - `~/.claude/CLAUDE.md` from the host is optionally bind-mounted into the container so global instructions are preserved.
 - `--dangerously-skip-permissions` is passed by default; the container isolation is the security boundary.
 - The Azure endpoint is specified by the `ANTHROPIC_FOUNDRY_BASE_URL` environment variable, with `CLAUDE_CODE_USE_FOUNDRY=1`.
+- Network egress is filtered by a dedicated Podman sidecar container (`claude-proxy`) running `network-proxy.js` on a session-isolated Podman bridge network (`claude-net-<session_id>`), enforcing domain and wildcard allow rules from `network-rules.txt`.
+
+

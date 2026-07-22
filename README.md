@@ -73,16 +73,57 @@ Any extra arguments are forwarded to `claude`:
 claude-podman "explain this codebase"
 ```
 
+## Network Security Rules
+
+`claude-podman` runs outbound network security filtering inside a **dedicated Podman proxy container** (`claude-proxy`). The agent container (`claude-code`) cannot inspect, tamper with, or kill the proxy server process, and has no access to the rules configuration file.
+
+### Configuration File Resolution
+
+Rules are loaded from the first existing config file in the following order:
+1. `$NETWORK_RULES_FILE` (environment variable path)
+2. `./network-rules.txt` or `./.claude-network-rules` (current workspace)
+3. `~/.config/claude-podman/network-rules.txt` (global user configuration)
+4. Default [`network-rules.txt`](file:///home/sebastien/git/claude-en-boite/network-rules.txt) in the repository
+
+### Rule Format & Examples
+
+Edit your rules file using scheme, hostname, port, and wildcard (`*`) patterns:
+
+```text
+# Allow all HTTPS traffic
+https://*
+
+# Allow specific endpoint
+https://www.google.com
+
+# Allow domain and all subdomains
+https://*.azure.com
+https://*.github.com
+
+# Allow local HTTP services
+http://localhost:*
+
+# Allow all traffic across all schemes
+*
+```
+
+> [!NOTE]
+> The Azure AI Foundry endpoint specified by `ANTHROPIC_FOUNDRY_BASE_URL` is automatically allowed so Claude Code authentication works without manual rule entries.
+
 ## How it works
 
 | Component | Detail |
 |---|---|
 | Base image | `alpine:3.22` |
-| Claude user | `claude` (UID 1000) |
+| Agent container | `claude-code` — runs Claude Code as unprivileged user `claude` (UID 1000) |
+| Proxy container | `claude-proxy` — isolated sidecar container running `network-proxy.js` on port 8888 |
+| Podman Network | Ephemeral `claude-net-<session_id>` bridge network linking agent and proxy containers |
 | Userns | `keep-id` — files created in the container are owned by the host user |
 | AI endpoint | Loaded from host `$ANTHROPIC_FOUNDRY_BASE_URL` environment variable |
 | Auth | Azure Cognitive Services bearer token (refreshed each run) |
 | Permissions | `--dangerously-skip-permissions` — container isolation is the security boundary |
+
+
 
 ## Troubleshooting
 

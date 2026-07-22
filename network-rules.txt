@@ -1,0 +1,21 @@
+# Network Security Rules for Claude Podman
+# Format: [http|https]://[host_or_wildcard][:port]
+#
+# Rules specify which network endpoints the container agent is allowed to access.
+# Lines starting with '#' or empty lines are ignored.
+#
+# Examples:
+#   https://*              - Allow all HTTPS endpoints
+#   http://*               - Allow all HTTP endpoints
+#   https://www.google.com - Allow specific HTTPS endpoint
+#   https://*.github.com   - Allow domain and all subdomains
+#   http://localhost:*     - Allow local HTTP services
+#   *                      - Allow all network traffic
+
+# Note: The Azure AI Foundry endpoint (ANTHROPIC_FOUNDRY_BASE_URL) is automatically allowed.
+
+https://*.github.com
+https://github.com
+https://*.githubusercontent.com
+https://*.npmjs.org
+https://registry.npmjs.org
