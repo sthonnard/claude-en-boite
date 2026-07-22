@@ -51,7 +51,29 @@ Build the container image once:
 ./install-claude-podman.sh
 ```
 
-This creates a local `claude-code` image based on Alpine Linux with Node.js, Python, and the Claude Code CLI, and installs a `claude-podman` symlink into `~/.local/bin/` so the command is available system-wide.
+This creates a local `claude-code` image based on Alpine Linux with Node.js, Python, pre-installed MCP servers, and the Claude Code CLI. It also installs a `claude-podman` symlink into `~/.local/bin/` so the command is available system-wide.
+
+### MCP & Claude Configuration Resolution
+
+During image build (`install-claude-podman.sh`), Claude settings and MCP server definitions are loaded from the first existing config file in the following order:
+1. `$CLAUDE_CONFIG_FILE` (environment variable path)
+2. `./.claude.json` or `./claude.local.json` (local project override, gitignored)
+3. `./claude.json` (current workspace default)
+4. `~/.config/claude-podman/claude.json` (global user configuration)
+5. Default [`claude.json`](claude.json) in the repository
+
+Example `claude.json`:
+```json
+{
+  "mcpServers": {
+    "atlassian": {
+      "type": "http",
+      "url": "https://mcp.atlassian.com/v1/mcp"
+    }
+  }
+}
+```
+
 
 ## Usage
 
@@ -84,7 +106,7 @@ Rules are loaded from the first existing config file in the following order:
 2. `./.claude-network-rules` or `./network-rules.local.txt` (local project override, gitignored)
 3. `./network-rules.txt` (current workspace default)
 4. `~/.config/claude-podman/network-rules.txt` (global user configuration)
-5. Default [`network-rules.txt`](file:///home/sebastien/git/claude-en-boite/network-rules.txt) in the repository
+5. Default [`network-rules.txt`](network-rules.txt) in the repository
 
 ### Rule Format & Examples
 

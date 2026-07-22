@@ -75,6 +75,7 @@ echo "Starting network proxy container ($PROXY_CONTAINER)..."
 podman run -d \
     --name "$PROXY_CONTAINER" \
     --network "$PODMAN_NET" \
+    -p 127.0.0.1:8888:8888 \
     "${PROXY_MOUNT_ARGS[@]}" \
     -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
     claude-proxy \
@@ -82,19 +83,45 @@ podman run -d \
 
 sleep 0.5
 
+# Persistent state directory for OAuth tokens, MCP settings, and session cache
+STATE_DIR="$HOME/.config/claude-podman/state"
+echo "Using STATE_DIR: $STATE_DIR"
+mkdir -p "$STATE_DIR"
+
 CLAUDE_MD_ARGS=()
 if [[ -f "$HOME/.claude/CLAUDE.md" ]]; then
     CLAUDE_MD_ARGS+=(-v "$HOME/.claude/CLAUDE.md:/home/claude/.claude/CLAUDE.md:ro,z")
 fi
 
-PROXY_URL="http://${PROXY_CONTAINER}:8888"
+ENV_ARGS=()
+if [[ -f "$(pwd)/.env" ]]; then
+    ENV_ARGS+=(--env-file "$(pwd)/.env")
+elif [[ -f "$HOME/.config/claude-podman/.env" ]]; then
+    ENV_ARGS+=(--env-file "$HOME/.config/claude-podman/.env")
+fi
+
+# Automatically forward credentials matching common MCP prefixes if present in host environment
+for var in $(env | grep -E '^(MCP_|ATLASSIAN_|GITHUB_|SLACK_)' | cut -d= -f1); do
+    ENV_ARGS+=("-e" "$var")
+done
+
+AGENT_NET_ARGS=()
+if [[ "$(uname)" == "Linux" ]]; then
+    AGENT_NET_ARGS=(--network host)
+    PROXY_URL="http://127.0.0.1:8888"
+else
+    AGENT_NET_ARGS=(--network "$PODMAN_NET")
+    PROXY_URL="http://${PROXY_CONTAINER}:8888"
+fi
 
 # 3. Launch agent container connected to podman network
 podman run --rm -it \
     --userns=keep-id \
-    --network "$PODMAN_NET" \
+    "${AGENT_NET_ARGS[@]}" \
     -v "$(pwd):/workspace:z" \
+    -v "$STATE_DIR:/home/claude/.claude:z" \
     "${CLAUDE_MD_ARGS[@]}" \
+    "${ENV_ARGS[@]}" \
     -w /workspace \
     -e HTTP_PROXY="$PROXY_URL" \
     -e HTTPS_PROXY="$PROXY_URL" \

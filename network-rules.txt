@@ -32,3 +32,7 @@ http://*.alpinelinux.org
 https://*.alpinelinux.org
 http://dl-cdn.alpinelinux.org
 https://dl-cdn.alpinelinux.org
+
+# Atlassian MCP endpoints
+https://*.atlassian.com
+https://atlassian.com
