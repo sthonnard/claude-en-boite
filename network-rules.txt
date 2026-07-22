@@ -26,3 +26,9 @@ https://*.pypi.org
 https://pythonhosted.org
 https://*.pythonhosted.org
 https://files.pythonhosted.org
+
+# Alpine Linux package repositories (apk)
+http://*.alpinelinux.org
+https://*.alpinelinux.org
+http://dl-cdn.alpinelinux.org
+https://dl-cdn.alpinelinux.org
