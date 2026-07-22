@@ -90,7 +90,7 @@ podman run -d \
     --name "$PROXY_CONTAINER" \
     --network "$PODMAN_NET" \
     -p 127.0.0.1:8888:8888 \
-    "${PROXY_MOUNT_ARGS[@]}" \
+    ${PROXY_MOUNT_ARGS+"${PROXY_MOUNT_ARGS[@]}"} \
     -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
     claude-proxy \
     /etc/claude-network-rules.txt >/dev/null
@@ -160,11 +160,11 @@ fi
 podman run --rm -it \
     --pull=never \
     --userns=keep-id \
-    "${AGENT_NET_ARGS[@]}" \
+    ${AGENT_NET_ARGS+"${AGENT_NET_ARGS[@]}"} \
     -v "$(pwd):/workspace:z" \
     -v "$STATE_DIR:/home/claude/.claude:z" \
-    "${CLAUDE_MD_ARGS[@]}" \
-    "${ENV_ARGS[@]}" \
+    ${CLAUDE_MD_ARGS+"${CLAUDE_MD_ARGS[@]}"} \
+    ${ENV_ARGS+"${ENV_ARGS[@]}"} \
     -w /workspace \
     -e HTTP_PROXY="$PROXY_URL" \
     -e HTTPS_PROXY="$PROXY_URL" \
