@@ -49,11 +49,15 @@ fi
 SESSION_ID="claude-$$"
 PODMAN_NET="claude-net-$SESSION_ID"
 PROXY_CONTAINER="claude-proxy-$SESSION_ID"
+TEMP_CLAUDE_MD=""
 
 cleanup() {
     echo "Cleaning up network proxy and resources..."
     podman rm -f "$PROXY_CONTAINER" &>/dev/null || true
     podman network rm "$PODMAN_NET" &>/dev/null || true
+    if [[ -n "${TEMP_CLAUDE_MD:-}" && -f "$TEMP_CLAUDE_MD" ]]; then
+        rm -f "$TEMP_CLAUDE_MD"
+    fi
 
     if [[ "$WAS_MACHINE_RUNNING" == "false" && "$(uname)" == "Darwin" ]]; then
         echo "Stopping Podman machine..."
@@ -88,10 +92,38 @@ STATE_DIR="$HOME/.config/claude-podman/state"
 echo "Using STATE_DIR: $STATE_DIR"
 mkdir -p "$STATE_DIR"
 
-CLAUDE_MD_ARGS=()
+TEMP_CLAUDE_MD=$(mktemp)
+echo "Enriched CLAUDE.md file: $TEMP_CLAUDE_MD"
 if [[ -f "$HOME/.claude/CLAUDE.md" ]]; then
-    CLAUDE_MD_ARGS+=(-v "$HOME/.claude/CLAUDE.md:/home/claude/.claude/CLAUDE.md:ro,z")
+    echo "Using global CLAUDE.md file: $HOME/.claude/CLAUDE.md"
+    cat "$HOME/.claude/CLAUDE.md" > "$TEMP_CLAUDE_MD"
+    echo "" >> "$TEMP_CLAUDE_MD"
 fi
+
+cat >> "$TEMP_CLAUDE_MD" << EOF
+
+# Container Environment Context
+
+- **Operating System**: Alpine Linux (package manager: \`apk\`).
+- **Network Access**: Outbound network connections are proxied and restricted to allowed destinations defined in the network rules configuration.
+EOF
+
+if [[ -n "$RULES_FILE" ]]; then
+    cat >> "$TEMP_CLAUDE_MD" << EOF
+- **Network Rules File**: \`$RULES_FILE\`
+
+Allowed network rules:
+\`\`\`
+$(cat "$RULES_FILE")
+\`\`\`
+EOF
+else
+    cat >> "$TEMP_CLAUDE_MD" << EOF
+- **Network Rules File**: None specified (default network proxy rules apply).
+EOF
+fi
+
+CLAUDE_MD_ARGS=(-v "$TEMP_CLAUDE_MD:/home/claude/.claude/CLAUDE.md:ro,z")
 
 ENV_ARGS=()
 if [[ -f "$(pwd)/.env" ]]; then

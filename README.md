@@ -86,7 +86,7 @@ claude-podman
 The script:
 1. Fetches a short-lived Azure Cognitive Services token via `az account get-access-token`
 2. Mounts the current directory into the container as `/workspace`
-3. Optionally mounts `~/.claude/CLAUDE.md` from the host for global instructions
+3. Passes an enriched `CLAUDE.md` to the container (including host instructions from `~/.claude/CLAUDE.md` if present, enriched with Alpine Linux environment and network rules context)
 4. Launches an interactive Claude Code session against the Azure AI Foundry endpoint
 
 Any extra arguments are forwarded to `claude`:
