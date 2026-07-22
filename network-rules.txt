@@ -19,3 +19,10 @@ https://github.com
 https://*.githubusercontent.com
 https://*.npmjs.org
 https://registry.npmjs.org
+
+# Python / PyPI package repositories
+https://pypi.org
+https://*.pypi.org
+https://pythonhosted.org
+https://*.pythonhosted.org
+https://files.pythonhosted.org
