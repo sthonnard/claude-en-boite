@@ -17,15 +17,24 @@ AZURE_TOKEN=$(az account get-access-token \
 WAS_MACHINE_RUNNING=true
 if [[ "$(uname)" == "Darwin" ]]; then
     MACHINE_STATE=$(podman machine inspect --format '{{.State}}' 2>/dev/null | tr -d '[:space:]' || echo "not-found")
-    if [[ "$MACHINE_STATE" != "running" ]]; then
+    if [[ "$MACHINE_STATE" == "not-found" ]]; then
         WAS_MACHINE_RUNNING=false
-        if [[ "$MACHINE_STATE" == "not-found" ]]; then
-            echo "Error: No Podman machine found. Please run 'podman machine init' first."
-            exit 1
-        fi
+        echo "No Podman machine found. Creating Podman machine..."
+        podman machine init
+        echo "Starting Podman machine..."
+        podman machine start
+    elif [[ "$MACHINE_STATE" != "running" ]]; then
+        WAS_MACHINE_RUNNING=false
         echo "Starting Podman machine..."
         podman machine start
     fi
+fi
+
+# Check that required images exist locally
+if ! podman image exists claude-proxy &>/dev/null || ! podman image exists claude-code &>/dev/null; then
+    echo "Error: Required Podman images ('claude-proxy' and/or 'claude-code') were not found." >&2
+    echo "Please run './install-claude-podman.sh' first to build the images." >&2
+    exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -59,9 +68,9 @@ cleanup() {
         rm -f "$TEMP_CLAUDE_MD"
     fi
 
-    if [[ "$WAS_MACHINE_RUNNING" == "false" && "$(uname)" == "Darwin" ]]; then
+    if [[ "${WAS_MACHINE_RUNNING:-true}" == "false" && "$(uname)" == "Darwin" ]]; then
         echo "Stopping Podman machine..."
-        podman machine stop
+        podman machine stop &>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -77,6 +86,7 @@ fi
 
 echo "Starting network proxy container ($PROXY_CONTAINER)..."
 podman run -d \
+    --pull=never \
     --name "$PROXY_CONTAINER" \
     --network "$PODMAN_NET" \
     -p 127.0.0.1:8888:8888 \
@@ -148,6 +158,7 @@ fi
 
 # 3. Launch agent container connected to podman network
 podman run --rm -it \
+    --pull=never \
     --userns=keep-id \
     "${AGENT_NET_ARGS[@]}" \
     -v "$(pwd):/workspace:z" \

@@ -15,7 +15,7 @@ This tool requires **Podman** and the **Azure CLI**. Follow the instructions bel
   brew install podman
   podman machine init
   ```
-  *(Note: The `claude-podman` script will automatically start the Podman machine if it is stopped, and stop it once the session ends.)*
+  *(Note: The scripts will automatically initialize and start the Podman machine if missing, stopping it when execution finishes.)*
 * **Ubuntu / Debian**:
   ```bash
   sudo apt-get update && sudo apt-get install -y podman

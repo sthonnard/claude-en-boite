@@ -18,12 +18,14 @@ if [[ "$(uname)" == "Darwin" ]]; then
         exit 1
     fi
     MACHINE_STATE=$(podman machine inspect --format '{{.State}}' 2>/dev/null | tr -d '[:space:]' || echo "not-found")
-    if [[ "$MACHINE_STATE" != "running" ]]; then
+    if [[ "$MACHINE_STATE" == "not-found" ]]; then
         WAS_MACHINE_RUNNING=false
-        if [[ "$MACHINE_STATE" == "not-found" ]]; then
-            echo "Error: No Podman machine found. Please run 'podman machine init' first."
-            exit 1
-        fi
+        echo "No Podman machine found. Creating Podman machine..."
+        podman machine init
+        echo "Starting Podman machine..."
+        podman machine start
+    elif [[ "$MACHINE_STATE" != "running" ]]; then
+        WAS_MACHINE_RUNNING=false
         echo "Starting Podman machine..."
         podman machine start
     fi
@@ -32,9 +34,9 @@ fi
 TMPDIR=$(mktemp -d)
 cleanup() {
     rm -rf "$TMPDIR"
-    if [[ "$WAS_MACHINE_RUNNING" == "false" ]]; then
+    if [[ "${WAS_MACHINE_RUNNING:-true}" == "false" && "$(uname)" == "Darwin" ]]; then
         echo "Stopping Podman machine..."
-        podman machine stop
+        podman machine stop &>/dev/null || true
     fi
 }
 trap cleanup EXIT

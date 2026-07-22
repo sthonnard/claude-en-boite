@@ -24,7 +24,7 @@ This repo contains two shell scripts for running Claude Code inside a rootless P
 ## Key design points
 
 - The container runs as the current user (`--userns=keep-id`) to avoid file permission issues on the mounted volume.
-- On macOS, the default Podman machine is automatically started if it is stopped, and stopped when the session terminates.
+- On macOS, the default Podman machine is automatically initialized/started if missing or stopped, and stopped when the script finishes.
 - Host `~/.claude/CLAUDE.md` (if present) is enriched with container context (Alpine Linux OS details and network rule configuration) and mounted into the container as `/home/claude/.claude/CLAUDE.md`.
 - `--dangerously-skip-permissions` is passed by default; the container isolation is the security boundary.
 - The Azure endpoint is specified by the `ANTHROPIC_FOUNDRY_BASE_URL` environment variable, with `CLAUDE_CODE_USE_FOUNDRY=1`.
