@@ -81,9 +81,10 @@ claude-podman "explain this codebase"
 
 Rules are loaded from the first existing config file in the following order:
 1. `$NETWORK_RULES_FILE` (environment variable path)
-2. `./network-rules.txt` or `./.claude-network-rules` (current workspace)
-3. `~/.config/claude-podman/network-rules.txt` (global user configuration)
-4. Default [`network-rules.txt`](file:///home/sebastien/git/claude-en-boite/network-rules.txt) in the repository
+2. `./.claude-network-rules` or `./network-rules.local.txt` (local project override, gitignored)
+3. `./network-rules.txt` (current workspace default)
+4. `~/.config/claude-podman/network-rules.txt` (global user configuration)
+5. Default [`network-rules.txt`](file:///home/sebastien/git/claude-en-boite/network-rules.txt) in the repository
 
 ### Rule Format & Examples
 

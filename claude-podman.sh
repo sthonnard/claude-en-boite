@@ -34,10 +34,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RULES_FILE=""
 if [[ -n "${NETWORK_RULES_FILE:-}" && -f "$NETWORK_RULES_FILE" ]]; then
     RULES_FILE="$NETWORK_RULES_FILE"
-elif [[ -f "$(pwd)/network-rules.txt" ]]; then
-    RULES_FILE="$(pwd)/network-rules.txt"
 elif [[ -f "$(pwd)/.claude-network-rules" ]]; then
     RULES_FILE="$(pwd)/.claude-network-rules"
+elif [[ -f "$(pwd)/network-rules.local.txt" ]]; then
+    RULES_FILE="$(pwd)/network-rules.local.txt"
+elif [[ -f "$(pwd)/network-rules.txt" ]]; then
+    RULES_FILE="$(pwd)/network-rules.txt"
 elif [[ -f "$HOME/.config/claude-podman/network-rules.txt" ]]; then
     RULES_FILE="$HOME/.config/claude-podman/network-rules.txt"
 elif [[ -f "$SCRIPT_DIR/network-rules.txt" ]]; then
