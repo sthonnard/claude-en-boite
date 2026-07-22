@@ -191,6 +191,7 @@ server.on('connect', (req, clientSocket, head) => {
     }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[NETWORK FILTER] Proxy running on 127.0.0.1:${PORT} with ${rules.length} active rules.`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[NETWORK FILTER] Proxy running on 0.0.0.0:${PORT} with ${rules.length} active rules.`);
 });
+
