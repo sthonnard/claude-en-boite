@@ -1,6 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
+SOURCE="${BASH_SOURCE[0]}"
+if [[ "$SOURCE" != /* ]]; then
+    RESOLVED="$(command -v "$SOURCE" 2>/dev/null || true)"
+    if [[ -n "$RESOLVED" ]]; then
+        SOURCE="$RESOLVED"
+    fi
+fi
+
+while [[ -h "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
 if [[ -z "${ANTHROPIC_FOUNDRY_BASE_URL:-}" ]]; then
     echo "Error: ANTHROPIC_FOUNDRY_BASE_URL environment variable is not set." >&2
     exit 1
@@ -30,14 +45,28 @@ if [[ "$(uname)" == "Darwin" ]]; then
     fi
 fi
 
-# Check that required images exist locally
-if ! podman image exists claude-proxy &>/dev/null || ! podman image exists claude-code &>/dev/null; then
-    echo "Error: Required Podman images ('claude-proxy' and/or 'claude-code') were not found." >&2
-    echo "Please run './install-claude-podman.sh' first to build the images." >&2
-    exit 1
+PROXY_TARGET_IMAGE="localhost/claude-proxy:latest"
+CODE_TARGET_IMAGE="localhost/claude-code:latest"
+
+# Ensure required images exist, auto-building if necessary
+if ! podman image inspect "$PROXY_TARGET_IMAGE" &>/dev/null || ! podman image inspect "$CODE_TARGET_IMAGE" &>/dev/null; then
+    if ! podman image inspect "claude-proxy" &>/dev/null || ! podman image inspect "claude-code" &>/dev/null; then
+        echo "Required Podman images not found. Building images now..."
+        "$SCRIPT_DIR/install-claude-podman.sh"
+    fi
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if podman image inspect "$PROXY_TARGET_IMAGE" &>/dev/null; then
+    PROXY_IMAGE="$PROXY_TARGET_IMAGE"
+else
+    PROXY_IMAGE="claude-proxy"
+fi
+
+if podman image inspect "$CODE_TARGET_IMAGE" &>/dev/null; then
+    CODE_IMAGE="$CODE_TARGET_IMAGE"
+else
+    CODE_IMAGE="claude-code"
+fi
 
 # Discover network rules file
 RULES_FILE=""
@@ -92,7 +121,7 @@ podman run -d \
     -p 127.0.0.1:8888:8888 \
     ${PROXY_MOUNT_ARGS+"${PROXY_MOUNT_ARGS[@]}"} \
     -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
-    claude-proxy \
+    "$PROXY_IMAGE" \
     /etc/claude-network-rules.txt >/dev/null
 
 sleep 0.5
@@ -178,5 +207,5 @@ podman run --rm -it \
     -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
     -e ANTHROPIC_FOUNDRY_AUTH_TOKEN="$AZURE_TOKEN" \
     -e PIP_BREAK_SYSTEM_PACKAGES=1 \
-    claude-code \
+    "$CODE_IMAGE" \
     claude --dangerously-skip-permissions --model claude-sonnet-4-6 "$@"

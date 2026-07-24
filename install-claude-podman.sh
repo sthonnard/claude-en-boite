@@ -1,15 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE="${BASH_SOURCE[0]}"
+if [[ "$SOURCE" != /* ]]; then
+    RESOLVED="$(command -v "$SOURCE" 2>/dev/null || true)"
+    if [[ -n "$RESOLVED" ]]; then
+        SOURCE="$RESOLVED"
+    fi
+fi
+
+while [[ -h "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 if ! command -v podman &>/dev/null; then
     echo "Podman not found, installing..."
     sudo apt-get update -qq && sudo apt-get install -y podman
 fi
 
-PROXY_IMAGE_NAME="claude-proxy"
-CODE_IMAGE_NAME="claude-code"
+PROXY_IMAGE_NAME="localhost/claude-proxy"
+CODE_IMAGE_NAME="localhost/claude-code"
 
 WAS_MACHINE_RUNNING=true
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -58,7 +71,7 @@ ENTRYPOINT ["node", "/usr/local/bin/network-proxy.js"]
 EOF
 
 echo "Building proxy image '${PROXY_IMAGE_NAME}'..."
-podman build -t "$PROXY_IMAGE_NAME" "$TMPDIR/proxy"
+podman build -t claude-proxy -t localhost/claude-proxy -t localhost/claude-proxy:latest "$TMPDIR/proxy"
 
 # 2. Build claude-code image
 mkdir -p "$TMPDIR/code"
@@ -136,7 +149,7 @@ CMD ["/bin/bash"]
 EOF
 
 echo "Building agent image '${CODE_IMAGE_NAME}' from Alpine Linux..."
-podman build -t "$CODE_IMAGE_NAME" "$TMPDIR/code"
+podman build -t claude-code -t localhost/claude-code -t localhost/claude-code:latest "$TMPDIR/code"
 
 mkdir -p ~/.local/bin
 ln -sf "$SCRIPT_DIR/claude-podman.sh" ~/.local/bin/claude-podman
