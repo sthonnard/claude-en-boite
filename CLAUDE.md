@@ -23,7 +23,7 @@ This repo contains two shell scripts for running Claude Code inside a rootless P
 
 ## Key design points
 
-- The container runs as the current user (`--userns=keep-id`) to avoid file permission issues on the mounted volume.
+- The container runs as the current user (`--userns=keep-id` or `--userns=keep-id:uid=1000,gid=1000` depending on the Podman version) to avoid file permission issues on the mounted volume by mapping the host user to container UID/GID 1000.
 - On macOS, the default Podman machine is automatically initialized/started if missing or stopped, and stopped when the script finishes.
 - Host `~/.claude/CLAUDE.md` (if present) is enriched with container context (Alpine Linux OS details and network rule configuration) and mounted into the container as `/home/claude/.claude/CLAUDE.md`.
 - `--dangerously-skip-permissions` is passed by default; the container isolation is the security boundary.

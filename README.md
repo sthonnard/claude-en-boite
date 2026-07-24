@@ -204,4 +204,4 @@ graph TD
 - **`ANTHROPIC_FOUNDRY_BASE_URL environment variable is not set`** — define `ANTHROPIC_FOUNDRY_BASE_URL` in your terminal environment before running.
 - **`az account get-access-token` fails** — run `az login` first.
 - **Token expired mid-session** — restart the script; it fetches a fresh token each run.
-- **File permission issues** — ensure `--userns=keep-id` is supported by your Podman version (`podman --version` ≥ 3.0).
+- **File permission issues** — ensure `--userns=keep-id` is supported by your Podman version (`podman --version` ≥ 3.0). If files created/modified by the container cannot be updated on the host (e.g., due to host user UID mismatch), upgrade to Podman ≥ 4.3.0, which maps the host user to container UID/GID 1000 (`--userns=keep-id:uid=1000,gid=1000`). To fix the permissions of existing files in the workspace, run: `podman unshare chown -R 0:0 .`

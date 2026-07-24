@@ -266,12 +266,24 @@ done
 
 AGENT_NET_ARGS=(--network host)
 
+# 3. Check if podman version is >= 4.3.0 to support keep-id mapping to container UID/GID 1000
+PODMAN_VERSION=$(podman --version 2>/dev/null | awk '{print $3}' || echo "0.0.0")
+IFS='.' read -r major minor patch <<< "$PODMAN_VERSION" || true
+major=$(echo "${major:-0}" | tr -dc '0-9')
+minor=$(echo "${minor:-0}" | tr -dc '0-9')
+major=${major:-0}
+minor=${minor:-0}
 
-# 3. Launch agent container connected to podman network
+USERNS_ARG="--userns=keep-id"
+if [[ "$major" -gt 4 ]] || { [[ "$major" -eq 4 ]] && [[ "$minor" -ge 3 ]]; }; then
+    USERNS_ARG="--userns=keep-id:uid=1000,gid=1000"
+fi
+
+# 4. Launch agent container connected to podman network
 podman run --rm -it \
     --name "$SESSION_ID" \
     --pull=never \
-    --userns=keep-id \
+    "$USERNS_ARG" \
     ${AGENT_NET_ARGS+"${AGENT_NET_ARGS[@]}"} \
     -v "$(pwd):/workspace:z" \
     -v "$STATE_DIR:/home/claude/.claude:z" \
