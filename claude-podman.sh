@@ -74,6 +74,11 @@ STATE_DIR="$CONFIG_DIR/state"
 echo "Using STATE_DIR: $STATE_DIR"
 mkdir -p "$STATE_DIR"
 
+# Ensure correct user namespace ownership of the state and config files (migrating from previous runs)
+if command -v podman &>/dev/null; then
+    podman unshare chown -R 0:0 "$CONFIG_DIR" 2>/dev/null || true
+fi
+
 ACTIVE_RULES_FILE="$CONFIG_DIR/active-network-rules.txt"
 
 # Discover project network rules file
