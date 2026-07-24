@@ -70,13 +70,31 @@ function loadRules() {
     return rules;
 }
 
-const rules = loadRules();
+let lastMtime = 0;
+let cachedRules = loadRules();
+
+function getRules() {
+    try {
+        if (fs.existsSync(rulesFile)) {
+            const stat = fs.statSync(rulesFile);
+            if (stat.mtimeMs !== lastMtime) {
+                lastMtime = stat.mtimeMs;
+                cachedRules = loadRules();
+                console.log(`[NETWORK FILTER] Reloaded ${cachedRules.length} rules from ${rulesFile}`);
+            }
+        }
+    } catch (e) {
+        // preserve cachedRules on error
+    }
+    return cachedRules;
+}
 
 function isAllowed(targetScheme, targetHost, targetPort) {
     targetHost = targetHost.toLowerCase();
     targetPort = parseInt(targetPort, 10);
+    const activeRules = getRules();
 
-    for (const rule of rules) {
+    for (const rule of activeRules) {
         if (rule.scheme !== '*' && rule.scheme !== targetScheme) {
             continue;
         }
@@ -157,14 +175,13 @@ server.on('connect', (req, clientSocket, head) => {
 
         if (!isAllowed(targetScheme, targetHost, targetPort)) {
             console.warn(`[NETWORK FILTER] BLOCKED HTTPS CONNECT to ${targetScheme}://${targetHost}:${targetPort}`);
-            clientSocket.write(
+            clientSocket.end(
                 'HTTP/1.1 403 Forbidden\r\n' +
                 'Content-Type: text/plain\r\n' +
                 'Connection: close\r\n' +
                 '\r\n' +
                 `403 Forbidden: Endpoint https://${targetHost}:${targetPort} not allowed by network security policy.\r\n`
             );
-            clientSocket.destroy();
             return;
         }
 
@@ -191,7 +208,20 @@ server.on('connect', (req, clientSocket, head) => {
     }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[NETWORK FILTER] Proxy running on 0.0.0.0:${PORT} with ${rules.length} active rules.`);
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`[NETWORK FILTER] Fatal: port ${PORT} is already in use (EADDRINUSE).`);
+        console.error(`[NETWORK FILTER] Another process is listening on port ${PORT}.`);
+        console.error(`[NETWORK FILTER] Run: ss -tlnp | grep :${PORT}   to find it.`);
+    } else {
+        console.error(`[NETWORK FILTER] Fatal server error: ${err.message}`);
+    }
+    process.exit(1);
 });
 
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[NETWORK FILTER] Proxy running on 0.0.0.0:${PORT} with ${cachedRules.length} active rules.`);
+});
+
+process.on('SIGTERM', () => { server.close(); process.exit(0); });
+process.on('SIGINT',  () => { server.close(); process.exit(0); });

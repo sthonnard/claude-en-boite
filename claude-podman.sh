@@ -68,68 +68,148 @@ else
     CODE_IMAGE="claude-code"
 fi
 
-# Discover network rules file
-RULES_FILE=""
+# Persistent configuration and state directories
+CONFIG_DIR="$HOME/.config/claude-podman"
+STATE_DIR="$CONFIG_DIR/state"
+echo "Using STATE_DIR: $STATE_DIR"
+mkdir -p "$STATE_DIR"
+
+ACTIVE_RULES_FILE="$CONFIG_DIR/active-network-rules.txt"
+
+# Discover project network rules file
+PROJECT_RULES_FILE=""
 if [[ -n "${NETWORK_RULES_FILE:-}" && -f "$NETWORK_RULES_FILE" ]]; then
-    RULES_FILE="$NETWORK_RULES_FILE"
+    PROJECT_RULES_FILE="$NETWORK_RULES_FILE"
 elif [[ -f "$(pwd)/.claude-network-rules" ]]; then
-    RULES_FILE="$(pwd)/.claude-network-rules"
+    PROJECT_RULES_FILE="$(pwd)/.claude-network-rules"
 elif [[ -f "$(pwd)/network-rules.local.txt" ]]; then
-    RULES_FILE="$(pwd)/network-rules.local.txt"
+    PROJECT_RULES_FILE="$(pwd)/network-rules.local.txt"
 elif [[ -f "$(pwd)/network-rules.txt" ]]; then
-    RULES_FILE="$(pwd)/network-rules.txt"
-elif [[ -f "$HOME/.config/claude-podman/network-rules.txt" ]]; then
-    RULES_FILE="$HOME/.config/claude-podman/network-rules.txt"
+    PROJECT_RULES_FILE="$(pwd)/network-rules.txt"
+elif [[ -f "$CONFIG_DIR/network-rules.txt" ]]; then
+    PROJECT_RULES_FILE="$CONFIG_DIR/network-rules.txt"
 elif [[ -f "$SCRIPT_DIR/network-rules.txt" ]]; then
-    RULES_FILE="$SCRIPT_DIR/network-rules.txt"
+    PROJECT_RULES_FILE="$SCRIPT_DIR/network-rules.txt"
 fi
 
+# Combine default and project rules into active rules file
+TMP_RULES=$(mktemp)
+if [[ -f "$SCRIPT_DIR/network-rules.txt" ]]; then
+    cat "$SCRIPT_DIR/network-rules.txt" >> "$TMP_RULES"
+    echo "" >> "$TMP_RULES"
+fi
+if [[ -f "$CONFIG_DIR/network-rules.txt" && "$CONFIG_DIR/network-rules.txt" != "$SCRIPT_DIR/network-rules.txt" ]]; then
+    cat "$CONFIG_DIR/network-rules.txt" >> "$TMP_RULES"
+    echo "" >> "$TMP_RULES"
+fi
+if [[ -n "$PROJECT_RULES_FILE" && -f "$PROJECT_RULES_FILE" ]]; then
+    cat "$PROJECT_RULES_FILE" >> "$TMP_RULES"
+    echo "" >> "$TMP_RULES"
+fi
+if [[ -f "$ACTIVE_RULES_FILE" ]]; then
+    cat "$ACTIVE_RULES_FILE" >> "$TMP_RULES"
+fi
+
+grep -v '^[[:space:]]*$' "$TMP_RULES" | awk '!seen[$0]++' > "$ACTIVE_RULES_FILE.tmp" || true
+cp "$ACTIVE_RULES_FILE.tmp" "$ACTIVE_RULES_FILE"
+rm -f "$ACTIVE_RULES_FILE.tmp" "$TMP_RULES"
+
+# Ensure the rules file actually exists as a regular file before we volume-mount it.
+touch "$ACTIVE_RULES_FILE"
+
 SESSION_ID="claude-$$"
-PODMAN_NET="claude-net-$SESSION_ID"
-PROXY_CONTAINER="claude-proxy-$SESSION_ID"
+PODMAN_NET="claude-net"
+PROXY_CONTAINER="claude-proxy"
 TEMP_CLAUDE_MD=""
 
 cleanup() {
-    echo "Cleaning up network proxy and resources..."
-    podman rm -f "$PROXY_CONTAINER" &>/dev/null || true
-    podman network rm "$PODMAN_NET" &>/dev/null || true
     if [[ -n "${TEMP_CLAUDE_MD:-}" && -f "$TEMP_CLAUDE_MD" ]]; then
         rm -f "$TEMP_CLAUDE_MD"
     fi
 
     if [[ "${WAS_MACHINE_RUNNING:-true}" == "false" && "$(uname)" == "Darwin" ]]; then
-        echo "Stopping Podman machine..."
-        podman machine stop &>/dev/null || true
+        RUNNING_CLAUDE=$(podman ps --filter "ancestor=$CODE_IMAGE" --filter "status=running" -q 2>/dev/null | wc -l || echo 0)
+        if [[ "$RUNNING_CLAUDE" -eq 0 ]]; then
+            echo "Stopping Podman machine..."
+            podman machine stop &>/dev/null || true
+        fi
     fi
 }
 trap cleanup EXIT
 
-# 1. Create session network
-podman network create "$PODMAN_NET" >/dev/null
-
-# 2. Launch proxy container
-PROXY_MOUNT_ARGS=()
-if [[ -n "$RULES_FILE" ]]; then
-    PROXY_MOUNT_ARGS+=(-v "$RULES_FILE:/etc/claude-network-rules.txt:ro,z")
+# 1. Create shared network for agent containers
+if ! podman network inspect "$PODMAN_NET" &>/dev/null; then
+    podman network create "$PODMAN_NET" > /dev/null
 fi
 
+# Helper: build (or rebuild) only the proxy image from the current network-proxy.js
+build_proxy_image() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp "$SCRIPT_DIR/network-proxy.js" "$tmpdir/"
+    cat > "$tmpdir/Containerfile" << 'DOCKERFILE'
+FROM alpine:3.22
+RUN apk add --no-cache nodejs
+COPY network-proxy.js /usr/local/bin/network-proxy.js
+RUN chmod +x /usr/local/bin/network-proxy.js
+EXPOSE 8888
+ENTRYPOINT ["node", "/usr/local/bin/network-proxy.js"]
+DOCKERFILE
+    echo "Building proxy image..."
+    podman build --quiet -t claude-proxy -t localhost/claude-proxy -t localhost/claude-proxy:latest "$tmpdir" > /dev/null
+    rm -rf "$tmpdir"
+}
+
+# Helper: start the proxy container on the host network.
+# Using host network ensures full access to host DNS, VPNs, and Azure endpoints,
+# while binding to port 8888 so agent containers can proxy through 127.0.0.1:8888.
+start_proxy() {
+    podman run -d \
+        --pull=never \
+        --name "$PROXY_CONTAINER" \
+        --network host \
+        -v "$ACTIVE_RULES_FILE:/etc/claude-network-rules.txt:ro,z" \
+        -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
+        -e PROXY_PORT="$PROXY_PORT" \
+        "$PROXY_IMAGE" \
+        /etc/claude-network-rules.txt &>/dev/null
+}
+
+PROXY_PORT=8888
+
+# 2. Ensure the shared proxy container is running with current rules & environment.
+if podman container inspect "$PROXY_CONTAINER" &>/dev/null; then
+    echo "Refreshing network proxy container ($PROXY_CONTAINER)..."
+    podman rm -f "$PROXY_CONTAINER" &>/dev/null || true
+fi
 echo "Starting network proxy container ($PROXY_CONTAINER)..."
-podman run -d \
-    --pull=never \
-    --name "$PROXY_CONTAINER" \
-    --network "$PODMAN_NET" \
-    -p 127.0.0.1:8888:8888 \
-    ${PROXY_MOUNT_ARGS+"${PROXY_MOUNT_ARGS[@]}"} \
-    -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
-    "$PROXY_IMAGE" \
-    /etc/claude-network-rules.txt >/dev/null
+start_proxy
 
-sleep 0.5
 
-# Persistent state directory for OAuth tokens, MCP settings, and session cache
-STATE_DIR="$HOME/.config/claude-podman/state"
-echo "Using STATE_DIR: $STATE_DIR"
-mkdir -p "$STATE_DIR"
+# Health-check: give the proxy up to 3s to start.
+sleep 1.5
+if ! podman container inspect -f '{{.State.Running}}' "$PROXY_CONTAINER" 2>/dev/null | grep -q true; then
+    PROXY_LOGS=$(podman logs "$PROXY_CONTAINER" 2>&1 || true)
+    # Likely a stale image bug — rebuild from current network-proxy.js and retry once.
+    echo "Proxy container exited — rebuilding proxy image and retrying..."
+    echo "Proxy logs: $PROXY_LOGS" >&2
+    podman rm -f "$PROXY_CONTAINER" &>/dev/null || true
+    build_proxy_image
+    PROXY_IMAGE="localhost/claude-proxy:latest"
+    start_proxy
+    sleep 2
+    if ! podman container inspect -f '{{.State.Running}}' "$PROXY_CONTAINER" 2>/dev/null | grep -q true; then
+        echo "Error: proxy container failed to start. Logs:" >&2
+        podman logs "$PROXY_CONTAINER" >&2 2>/dev/null || true
+        exit 1
+    fi
+fi
+
+# 3. Proxy URL: agent container connects via host loopback proxy
+PROXY_URL="http://127.0.0.1:${PROXY_PORT}"
+echo "Proxy URL: $PROXY_URL"
+
+
 
 TEMP_CLAUDE_MD=$(mktemp)
 echo "Enriched CLAUDE.md file: $TEMP_CLAUDE_MD"
@@ -147,13 +227,13 @@ cat >> "$TEMP_CLAUDE_MD" << EOF
 - **Network Access**: Outbound network connections are proxied and restricted to allowed destinations defined in the network rules configuration.
 EOF
 
-if [[ -n "$RULES_FILE" ]]; then
+if [[ -n "$PROJECT_RULES_FILE" && -f "$PROJECT_RULES_FILE" ]]; then
     cat >> "$TEMP_CLAUDE_MD" << EOF
-- **Network Rules File**: \`$RULES_FILE\`
+- **Network Rules File**: \`$PROJECT_RULES_FILE\`
 
 Allowed network rules:
 \`\`\`
-$(cat "$RULES_FILE")
+$(cat "$PROJECT_RULES_FILE")
 \`\`\`
 EOF
 else
@@ -176,14 +256,8 @@ for var in $(env | grep -E '^(MCP_|ATLASSIAN_|GITHUB_|SLACK_)' | cut -d= -f1); d
     ENV_ARGS+=("-e" "$var")
 done
 
-AGENT_NET_ARGS=()
-if [[ "$(uname)" == "Linux" ]]; then
-    AGENT_NET_ARGS=(--network host)
-    PROXY_URL="http://127.0.0.1:8888"
-else
-    AGENT_NET_ARGS=(--network "$PODMAN_NET")
-    PROXY_URL="http://${PROXY_CONTAINER}:8888"
-fi
+AGENT_NET_ARGS=(--network host)
+
 
 # 3. Launch agent container connected to podman network
 podman run --rm -it \
@@ -201,8 +275,8 @@ podman run --rm -it \
     -e https_proxy="$PROXY_URL" \
     -e ALL_PROXY="$PROXY_URL" \
     -e all_proxy="$PROXY_URL" \
-    -e NO_PROXY="127.0.0.1,localhost,$PROXY_CONTAINER" \
-    -e no_proxy="127.0.0.1,localhost,$PROXY_CONTAINER" \
+    -e NO_PROXY="127.0.0.1,localhost" \
+    -e no_proxy="127.0.0.1,localhost" \
     -e CLAUDE_CODE_USE_FOUNDRY=1 \
     -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
     -e ANTHROPIC_FOUNDRY_AUTH_TOKEN="$AZURE_TOKEN" \

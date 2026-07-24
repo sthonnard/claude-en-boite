@@ -1,6 +1,6 @@
 # claude-en-boite
 
-Run [Claude Code](https://claude.ai/code) inside a rootless Podman container, authenticated via Azure AI Foundry.
+Run [Claude Code](https://claude.ai/code) inside a rootless Podman container, authenticated via Azure AI Foundry, and with a limited internet connectivity.
 
 ## Prerequisites
 
@@ -135,12 +135,63 @@ http://localhost:*
 
 ## How it works
 
+### Architecture Diagram
+
+```mermaid
+graph TD
+    subgraph Host ["Host System"]
+        subgraph Config ["Configuration & Auth"]
+            Rules["Active Rules File<br>active-network-rules.txt"]
+            AzureCLI["Azure CLI (az)<br>Fetches Access Token"]
+        end
+
+        subgraph Proxy ["Proxy Component"]
+            ProxyCont["Shared Proxy Container<br>(claude-proxy)"]
+            ProxyScript["network-proxy.js<br>(Binds to localhost:8888)"]
+            ProxyCont -->|Runs| ProxyScript
+            Rules -->|Volume Mounted - Read-Only| ProxyCont
+        end
+
+        subgraph Agents ["Parallel Agent Sessions"]
+            subgraph AgentA ["Agent Session A (Project A)"]
+                CodeA["Claude Code Container<br>(claude-code)"]
+                WS_A["Project A Dir<br>(Mounted to /workspace)"]
+                CodeA -.->|Mounts| WS_A
+            end
+
+            subgraph AgentB ["Agent Session B (Project B)"]
+                CodeB["Claude Code Container<br>(claude-code)"]
+                WS_B["Project B Dir<br>(Mounted to /workspace)"]
+                CodeB -.->|Mounts| WS_B
+            end
+        end
+
+        AzureCLI -->|Injects Bearer Token & Base URL| CodeA
+        AzureCLI -->|Injects Bearer Token & Base URL| CodeB
+        
+        CodeA -->|HTTP/HTTPS Proxy traffic<br>via 127.0.0.1:8888| ProxyScript
+        CodeB -->|HTTP/HTTPS Proxy traffic<br>via 127.0.0.1:8888| ProxyScript
+    end
+
+    subgraph WAN ["Internet / External Services"]
+        AzureFoundry["Azure AI Foundry<br>(Eurocontrol Gateway)"]
+        AllowedDomains["Allowed Domains<br>(GitHub, npm, pip, etc.)"]
+        BlockedDomains["Unallowed Domains<br>(Blocked by Proxy)"]
+    end
+
+    ProxyScript -->|Allow / Forward| AzureFoundry
+    ProxyScript -->|Allow / Forward| AllowedDomains
+    ProxyScript -.->|Deny / Block| BlockedDomains
+```
+
+### Component Details
+
 | Component | Detail |
 |---|---|
 | Base image | `alpine:3.22` |
 | Agent container | `claude-code` — runs Claude Code as unprivileged user `claude` (UID 1000) |
 | Proxy container | `claude-proxy` — isolated sidecar container running `network-proxy.js` on port 8888 |
-| Podman Network | Ephemeral `claude-net-<session_id>` bridge network linking agent and proxy containers |
+| Podman Network | Shared `claude-net` bridge network linking agent containers and the shared proxy container |
 | Userns | `keep-id` — files created in the container are owned by the host user |
 | AI endpoint | Loaded from host `$ANTHROPIC_FOUNDRY_BASE_URL` environment variable |
 | Auth | Azure Cognitive Services bearer token (refreshed each run) |

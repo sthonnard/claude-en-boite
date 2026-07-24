@@ -36,3 +36,18 @@ https://dl-cdn.alpinelinux.org
 # Atlassian MCP endpoints
 https://*.atlassian.com
 https://atlassian.com
+
+# Anthropic & Claude endpoints
+https://api.anthropic.com
+https://*.anthropic.com
+https://*.claude.ai
+https://claude.ai
+
+# Azure & Foundry endpoints
+https://*.azure-api.net
+https://*.cognitiveservices.azure.com
+https://*.microsoftonline.com
+
+# Telemetry / Feature flags
+https://*.statsig.com
+https://*.statsigapi.net

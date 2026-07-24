@@ -71,6 +71,18 @@ ENTRYPOINT ["node", "/usr/local/bin/network-proxy.js"]
 EOF
 
 echo "Building proxy image '${PROXY_IMAGE_NAME}'..."
+if podman container inspect claude-proxy &>/dev/null; then
+    echo "Removing existing 'claude-proxy' container to apply new proxy image..."
+    podman rm -f claude-proxy &>/dev/null || true
+    # Kill any zombie rootlessport process left behind by the removed container.
+    ZOMBIE=$(ss -tlnp 2>/dev/null | grep ':8888[[:space:]]' | grep 'rootlessport' \
+        | grep -oP '(?<=pid=)\d+' | head -1 || true)
+    if [[ -n "$ZOMBIE" ]]; then
+        echo "Cleaning up zombie rootlessport process (pid=$ZOMBIE) on port 8888..."
+        kill "$ZOMBIE" 2>/dev/null || true
+        sleep 0.5
+    fi
+fi
 podman build -t claude-proxy -t localhost/claude-proxy -t localhost/claude-proxy:latest "$TMPDIR/proxy"
 
 # 2. Build claude-code image
