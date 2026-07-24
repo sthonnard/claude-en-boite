@@ -127,9 +127,17 @@ cleanup() {
         rm -f "$TEMP_CLAUDE_MD"
     fi
 
-    if [[ "${WAS_MACHINE_RUNNING:-true}" == "false" && "$(uname)" == "Darwin" ]]; then
-        RUNNING_CLAUDE=$(podman ps --filter "ancestor=$CODE_IMAGE" --filter "status=running" -q 2>/dev/null | wc -l || echo 0)
-        if [[ "$RUNNING_CLAUDE" -eq 0 ]]; then
+    # Count other running agent containers, excluding this session
+    RUNNING_CLAUDE=$(set +o pipefail; podman ps --filter "ancestor=$CODE_IMAGE" --filter "status=running" --format "{{.Names}}" 2>/dev/null | grep -v "^${SESSION_ID}$" | wc -l)
+    RUNNING_CLAUDE=${RUNNING_CLAUDE//[[:space:]]/}
+
+    if [[ "$RUNNING_CLAUDE" -eq 0 ]]; then
+        if podman container inspect "$PROXY_CONTAINER" &>/dev/null; then
+            echo "Stopping network proxy container ($PROXY_CONTAINER)..."
+            podman rm -f "$PROXY_CONTAINER" &>/dev/null || true
+        fi
+
+        if [[ "${WAS_MACHINE_RUNNING:-true}" == "false" && "$(uname)" == "Darwin" ]]; then
             echo "Stopping Podman machine..."
             podman machine stop &>/dev/null || true
         fi
@@ -261,6 +269,7 @@ AGENT_NET_ARGS=(--network host)
 
 # 3. Launch agent container connected to podman network
 podman run --rm -it \
+    --name "$SESSION_ID" \
     --pull=never \
     --userns=keep-id \
     ${AGENT_NET_ARGS+"${AGENT_NET_ARGS[@]}"} \
