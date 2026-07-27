@@ -1,0 +1,8 @@
+# Local custom network rules
+.claude-network-rules
+
+# Local custom Claude config & MCP rules
+.claude.json
+
+# env variables
+.env

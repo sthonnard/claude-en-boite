@@ -1,0 +1,53 @@
+# Network Security Rules for Claude Podman
+# Format: [http|https]://[host_or_wildcard][:port]
+#
+# Rules specify which network endpoints the container agent is allowed to access.
+# Lines starting with '#' or empty lines are ignored.
+#
+# Examples:
+#   https://*              - Allow all HTTPS endpoints
+#   http://*               - Allow all HTTP endpoints
+#   https://www.google.com - Allow specific HTTPS endpoint
+#   https://*.github.com   - Allow domain and all subdomains
+#   http://localhost:*     - Allow local HTTP services
+#   *                      - Allow all network traffic
+
+# Note: The Azure AI Foundry endpoint (ANTHROPIC_FOUNDRY_BASE_URL) is automatically allowed.
+
+https://*.github.com
+https://github.com
+https://*.githubusercontent.com
+https://*.npmjs.org
+https://registry.npmjs.org
+
+# Python / PyPI package repositories
+https://pypi.org
+https://*.pypi.org
+https://pythonhosted.org
+https://*.pythonhosted.org
+https://files.pythonhosted.org
+
+# Alpine Linux package repositories (apk)
+http://*.alpinelinux.org
+https://*.alpinelinux.org
+http://dl-cdn.alpinelinux.org
+https://dl-cdn.alpinelinux.org
+
+# Atlassian MCP endpoints
+https://*.atlassian.com
+https://atlassian.com
+
+# Anthropic & Claude endpoints
+https://api.anthropic.com
+https://*.anthropic.com
+https://*.claude.ai
+https://claude.ai
+
+# Azure & Foundry endpoints
+https://*.azure-api.net
+https://*.cognitiveservices.azure.com
+https://*.microsoftonline.com
+
+# Telemetry / Feature flags
+https://*.statsig.com
+https://*.statsigapi.net
