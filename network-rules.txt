@@ -33,9 +33,12 @@ https://*.alpinelinux.org
 http://dl-cdn.alpinelinux.org
 https://dl-cdn.alpinelinux.org
 
-# Atlassian MCP endpoints
+# Atlassian MCP & Cloud endpoints (Jira, Confluence)
 https://*.atlassian.com
 https://atlassian.com
+https://*.atlassian.net
+https://atlassian.net
+
 
 # Anthropic & Claude endpoints
 https://api.anthropic.com
