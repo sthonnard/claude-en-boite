@@ -14,40 +14,50 @@
 upstream: https://mcp.atlassian.com/v1/mcp
 
 # Tools that always pass through (reads). Supports glob wildcards (* matches any characters).
+# Tool names must match the official Atlassian MCP server (camelCase).
+# Full list: https://gist.github.com/didier-durand/de20b1bd16b5789c302cabea127766ed
 allow:
-  - confluence_search
-  - confluence_get_*
-  - confluence_get_page_children
-  - confluence_get_comments
-  - jira_get_*
-  - jira_search
-  - jira_list_*
+  - atlassianUserInfo
+  - getAccessibleAtlassianResources
+  - getConfluence*
+  - getPagesInConfluenceSpace
+  - searchConfluenceUsingCql
+  - getJira*
+  - searchJiraIssuesUsingJql
+  - lookupJiraAccountId
+  - getVisibleJiraProjects
+  - getTransitionsForJiraIssue
 
 # Tools that are always blocked (overrides allow)
-deny:
-  - confluence_delete_page
+deny: []
 
 # Write tools with resource-level restrictions.
 # Each entry specifies:
 #   field:   which argument field to check
 #   allowed: list of permitted values (supports PREFIX-* wildcards)
 restrict:
-  confluence_update_page:
+  updateConfluencePage:
     field: pageId
     allowed: ["1095041067", "379191456"]
-  confluence_create_page:
+  createConfluencePage:
     field: spaceKey
     allowed: ["TEAM", "DOCS"]
-  jira_update_issue:
+  createConfluenceFooterComment:
+    field: pageId
+    allowed: ["1095041067", "379191456"]
+  createConfluenceInlineComment:
+    field: pageId
+    allowed: ["1095041067", "379191456"]
+  editJiraIssue:
     field: issueKey
     allowed: ["PROJ-*"]
-  jira_create_issue:
+  createJiraIssue:
     field: projectKey
     allowed: ["PROJ"]
-  jira_add_comment:
+  addCommentToJiraIssue:
     field: issueKey
     allowed: ["PROJ-*"]
-  jira_transition_issue:
+  transitionJiraIssue:
     field: issueKey
     allowed: ["PROJ-*"]
 
