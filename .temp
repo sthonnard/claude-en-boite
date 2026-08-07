@@ -1,0 +1,7 @@
+add "test" at the bottom of the confluence page below, using the atlassian mcp:
+  https://eurocontrol-nmd.atlassian.net/wiki/spaces/~63bd2dfc0a1b5442166a4a4b/pages/3
+  79191456/Various
+-> ok
+add "test" to the following page, still using the atlassian mcp: https://euroco
+  ntrol-nmd.atlassian.net/wiki/spaces/~63bd2dfc0a1b5442166a4a4b/pages/379159068/notes
+-> fail

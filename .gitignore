@@ -8,3 +8,5 @@ mcp-access-rules.local.yaml
 
 # env variables
 .env
+
+.temp/
