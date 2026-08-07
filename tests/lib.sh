@@ -144,6 +144,114 @@ wait_for_container() {
     return 1
 }
 
+# ── MCP proxy helpers ────────────────────────────────────────────────────────
+
+# Create a minimal mock MCP upstream server script.
+# Returns the path to a temp JS file.
+create_mock_mcp_server_script() {
+    local script_file
+    script_file=$(mktemp --suffix=.js)
+    cat > "$script_file" << 'MOCKEOF'
+const http = require('http');
+const PORT = parseInt(process.env.MOCK_MCP_PORT || '18891', 10);
+const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        let id = null;
+        try { id = JSON.parse(body).id; } catch(e) {}
+        const resp = JSON.stringify({
+            jsonrpc: '2.0', id: id,
+            result: { content: [{ type: 'text', text: 'mock-ok' }] }
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(resp);
+    });
+});
+server.listen(PORT, '0.0.0.0', () => {
+    console.log('[MOCK MCP] listening on port ' + PORT);
+});
+process.on('SIGTERM', () => { server.close(); process.exit(0); });
+MOCKEOF
+    echo "$script_file"
+}
+
+# Start the MCP proxy container for testing.
+# Usage: start_test_mcp_proxy <config-file> <mock-upstream-port> [container-name] [proxy-port]
+start_test_mcp_proxy() {
+    local config_file="$1"
+    local mock_port="$2"
+    local cname="${3:-claude-mcp-proxy-test}"
+    local proxy_port="${4:-18892}"
+
+    podman run -d \
+        --pull=never \
+        --name "$cname" \
+        --network host \
+        -v "${config_file}:/etc/mcp-access-rules.yaml:ro,z" \
+        -e MCP_PROXY_PORT="$proxy_port" \
+        --entrypoint node \
+        localhost/claude-proxy:latest \
+        /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml &>/dev/null
+    echo "$cname"
+}
+
+# Start a mock MCP upstream server in a container.
+# Usage: start_mock_mcp_server <script-file> [container-name] [port]
+start_mock_mcp_server() {
+    local script_file="$1"
+    local cname="${2:-claude-mock-mcp}"
+    local port="${3:-18891}"
+
+    podman run -d \
+        --pull=never \
+        --name "$cname" \
+        --network host \
+        -v "${script_file}:/usr/local/bin/mock-mcp.js:ro,z" \
+        -e MOCK_MCP_PORT="$port" \
+        --entrypoint node \
+        localhost/claude-proxy:latest \
+        /usr/local/bin/mock-mcp.js &>/dev/null
+    echo "$cname"
+}
+
+# Send a JSON-RPC request to the MCP proxy and return the response body.
+# Usage: mcp_proxy_call <proxy-url> <json-body>
+mcp_proxy_call() {
+    local proxy_url="$1"
+    local json_body="$2"
+    curl -s -X POST "${proxy_url}/v1/mcp" \
+        -H "Content-Type: application/json" \
+        -d "$json_body" \
+        --max-time 10 2>/dev/null
+}
+
+# Send a JSON-RPC request and return the HTTP status code.
+# Usage: mcp_proxy_status <proxy-url> <json-body>
+mcp_proxy_status() {
+    local proxy_url="$1"
+    local json_body="$2"
+    curl -s -o /dev/null -w '%{http_code}' -X POST "${proxy_url}/v1/mcp" \
+        -H "Content-Type: application/json" \
+        -d "$json_body" \
+        --max-time 10 2>/dev/null || echo "000"
+}
+
+# Check if an MCP response contains isError: true.
+# Returns 0 (success) if isError is true, 1 otherwise.
+mcp_response_is_error() {
+    local response="$1"
+    echo "$response" | grep -q '"isError"[[:space:]]*:[[:space:]]*true'
+}
+
+# Check if an MCP response contains the "mock-ok" text from our mock server.
+# Returns 0 (success) if forwarded to mock, 1 otherwise.
+mcp_response_is_forwarded() {
+    local response="$1"
+    echo "$response" | grep -q 'mock-ok'
+}
+
 # ── Proxy helpers ─────────────────────────────────────────────────────────────
 
 # Start the proxy container for testing.

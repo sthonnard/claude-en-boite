@@ -52,6 +52,7 @@ chmod +x tests/*.sh
 
 Rules:
 - After changing `network-proxy.js` or `claude-podman.sh`: run `./tests/02-proxy.sh` **and** `./tests/03-launch.sh`.
+- After changing `mcp-proxy.js`: run `./tests/04-mcp-proxy.sh`.
 - After changing `install-claude-podman.sh`: run `./tests/01-install.sh`.
 - After any change: run `./tests/run-tests.sh --skip-build` at minimum.
 - If the test runner itself cannot be executed (e.g. tool sandbox failure), **say so explicitly** and ask the user to run it. Do not silently skip verification.

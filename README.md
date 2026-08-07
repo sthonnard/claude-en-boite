@@ -87,7 +87,8 @@ The script:
 1. Fetches a short-lived Azure Cognitive Services token via `az account get-access-token`
 2. Mounts the current directory into the container as `/workspace`
 3. Passes an enriched `CLAUDE.md` to the container (including host instructions from `~/.claude/CLAUDE.md` if present, enriched with Alpine Linux environment and network rules context)
-4. Launches an interactive Claude Code session against the Azure AI Foundry endpoint
+4. If an `mcp-access-rules.yaml` config is present, starts the MCP access control proxy and rewrites the MCP server URL to route through it
+5. Launches an interactive Claude Code session against the Azure AI Foundry endpoint
 
 Any extra arguments are forwarded to `claude`:
 
@@ -133,6 +134,81 @@ http://localhost:*
 > [!NOTE]
 > The Azure AI Foundry endpoint specified by `ANTHROPIC_FOUNDRY_BASE_URL` is automatically allowed so Claude Code authentication works without manual rule entries.
 
+## MCP Access Control
+
+When an `mcp-access-rules.yaml` configuration file is present, `claude-podman` starts an additional **MCP proxy container** (`claude-mcp-proxy`) that intercepts MCP tool calls between the Claude Code agent and the remote Atlassian MCP server. This provides resource-level write restrictions while leaving read operations unrestricted.
+
+The MCP proxy sits between Claude Code and `mcp.atlassian.com`, inspecting JSON-RPC `tools/call` requests. Write operations (create, update, delete) are checked against an allowlist before being forwarded. Blocked operations return a clear error message to the agent.
+
+### Why a Separate Proxy?
+
+The network proxy (`claude-proxy`) handles HTTPS via CONNECT tunneling and can only filter by domain. MCP traffic is encrypted inside the TLS tunnel, so inspecting tool calls requires a dedicated application-layer proxy that terminates the MCP protocol.
+
+### MCP Access Rules Configuration
+
+Rules are loaded from the first existing config file in the following order:
+1. `$MCP_RULES_FILE_ENV` (environment variable path)
+2. `./.mcp-access-rules.yaml` (local project override, gitignored)
+3. `./mcp-access-rules.local.yaml` (local project override, gitignored)
+4. `./mcp-access-rules.yaml` (current workspace default)
+5. `~/.config/claude-podman/mcp-access-rules.yaml` (global user configuration)
+
+See [`mcp-access-rules.yaml.example`](mcp-access-rules.yaml.example) for the full format. A minimal example:
+
+```yaml
+upstream: https://mcp.atlassian.com/v1/mcp
+
+# Read tools pass through unrestricted
+allow:
+  - confluence_search
+  - confluence_get_*
+  - jira_get_*
+  - jira_search
+
+# Block destructive operations
+deny:
+  - confluence_delete_page
+
+# Write tools restricted to specific resources
+restrict:
+  confluence_update_page:
+    field: pageId
+    allowed: ["12345678", "98765432"]
+  jira_update_issue:
+    field: issueKey
+    allowed: ["PROJ-*"]
+
+# Block any tool not listed above
+default: deny
+```
+
+### Rule Evaluation Order
+
+For each `tools/call` request, the proxy evaluates in this order:
+1. **Deny list** — if the tool name matches, the call is blocked
+2. **Allow list** — if the tool name matches, the call is forwarded
+3. **Restrict list** — if the tool name matches, the specified argument field is checked against the allowed values (supports `PREFIX-*` wildcards)
+4. **Default policy** — `deny` blocks unknown tools, `allow` permits them
+
+All non-`tools/call` MCP messages (`initialize`, `tools/list`, notifications) pass through transparently.
+
+### Audit Logging
+
+Every tool call is logged by the MCP proxy with a `[MCP FILTER]` prefix:
+```
+[MCP FILTER] ALLOWED tool=confluence_search reason=allow-list
+[MCP FILTER] DENIED tool=confluence_update_page reason=Tool 'confluence_update_page' blocked for pageId='99999'. Allowed: [12345678, 98765432].
+```
+
+View the logs with:
+```bash
+podman logs claude-mcp-proxy
+```
+
+### Config Hot-Reload
+
+The MCP proxy detects changes to the rules file automatically (via mtime check). Edit the config file while a session is running and the new rules take effect on the next tool call.
+
 ## How it works
 
 ### Architecture Diagram
@@ -142,14 +218,22 @@ graph TD
     subgraph Host ["Host System"]
         subgraph Config ["Configuration & Auth"]
             Rules["Active Rules File<br>active-network-rules.txt"]
+            McpRules["MCP Access Rules<br>mcp-access-rules.yaml"]
             AzureCLI["Azure CLI (az)<br>Fetches Access Token"]
         end
 
-        subgraph Proxy ["Proxy Component"]
+        subgraph Proxy ["Network Proxy"]
             ProxyCont["Shared Proxy Container<br>(claude-proxy)"]
             ProxyScript["network-proxy.js<br>(Binds to localhost:8888)"]
             ProxyCont -->|Runs| ProxyScript
             Rules -->|Volume Mounted - Read-Only| ProxyCont
+        end
+
+        subgraph McpProxy ["MCP Proxy (Optional)"]
+            McpProxyCont["MCP Proxy Container<br>(claude-mcp-proxy)"]
+            McpProxyScript["mcp-proxy.js<br>(Binds to localhost:8889)"]
+            McpProxyCont -->|Runs| McpProxyScript
+            McpRules -->|Volume Mounted - Read-Only| McpProxyCont
         end
 
         subgraph Agents ["Parallel Agent Sessions"]
@@ -171,17 +255,22 @@ graph TD
         
         CodeA -->|HTTP/HTTPS Proxy traffic<br>via 127.0.0.1:8888| ProxyScript
         CodeB -->|HTTP/HTTPS Proxy traffic<br>via 127.0.0.1:8888| ProxyScript
+        CodeA -->|MCP tool calls<br>via 127.0.0.1:8889| McpProxyScript
+        CodeB -->|MCP tool calls<br>via 127.0.0.1:8889| McpProxyScript
     end
 
     subgraph WAN ["Internet / External Services"]
         AzureFoundry["Azure AI Foundry<br>(Eurocontrol Gateway)"]
         AllowedDomains["Allowed Domains<br>(GitHub, npm, pip, etc.)"]
         BlockedDomains["Unallowed Domains<br>(Blocked by Proxy)"]
+        AtlassianMCP["Atlassian MCP Server<br>(mcp.atlassian.com)"]
     end
 
     ProxyScript -->|Allow / Forward| AzureFoundry
     ProxyScript -->|Allow / Forward| AllowedDomains
     ProxyScript -.->|Deny / Block| BlockedDomains
+    McpProxyScript -->|Allow / Forward| AtlassianMCP
+    McpProxyScript -.->|Deny / Block<br>Restricted Tools| AtlassianMCP
 ```
 
 ### Component Details
@@ -190,7 +279,8 @@ graph TD
 |---|---|
 | Base image | `alpine:3.22` |
 | Agent container | `claude-code` — runs Claude Code as unprivileged user `claude` (UID 1000) |
-| Proxy container | `claude-proxy` — isolated sidecar container running `network-proxy.js` on port 8888 |
+| Network proxy container | `claude-proxy` — isolated sidecar running `network-proxy.js` on port 8888 (domain-level filtering) |
+| MCP proxy container | `claude-mcp-proxy` — optional sidecar running `mcp-proxy.js` on port 8889 (MCP tool-level filtering, started only when `mcp-access-rules.yaml` exists) |
 | Podman Network | Shared `claude-net` bridge network linking agent containers and the shared proxy container |
 | Userns | `keep-id` — files created in the container are owned by the host user |
 | AI endpoint | Loaded from host `$ANTHROPIC_FOUNDRY_BASE_URL` environment variable |

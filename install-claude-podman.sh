@@ -57,6 +57,7 @@ trap cleanup EXIT
 # 1. Build claude-proxy image
 mkdir -p "$TMPDIR/proxy"
 cp "$SCRIPT_DIR/network-proxy.js" "$TMPDIR/proxy/"
+cp "$SCRIPT_DIR/mcp-proxy.js" "$TMPDIR/proxy/"
 
 cat > "$TMPDIR/proxy/Containerfile" << 'EOF'
 FROM alpine:3.22
@@ -64,9 +65,10 @@ FROM alpine:3.22
 RUN apk add --no-cache nodejs
 
 COPY network-proxy.js /usr/local/bin/network-proxy.js
-RUN chmod +x /usr/local/bin/network-proxy.js
+COPY mcp-proxy.js /usr/local/bin/mcp-proxy.js
+RUN chmod +x /usr/local/bin/network-proxy.js /usr/local/bin/mcp-proxy.js
 
-EXPOSE 8888
+EXPOSE 8888 8889
 ENTRYPOINT ["node", "/usr/local/bin/network-proxy.js"]
 EOF
 

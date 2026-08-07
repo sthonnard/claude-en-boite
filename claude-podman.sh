@@ -122,14 +122,37 @@ rm -f "$ACTIVE_RULES_FILE.tmp" "$TMP_RULES"
 # Ensure the rules file actually exists as a regular file before we volume-mount it.
 touch "$ACTIVE_RULES_FILE"
 
+# Discover MCP access rules file
+MCP_RULES_FILE=""
+if [[ -n "${MCP_RULES_FILE_ENV:-}" && -f "$MCP_RULES_FILE_ENV" ]]; then
+    MCP_RULES_FILE="$MCP_RULES_FILE_ENV"
+elif [[ -f "$(pwd)/.mcp-access-rules.yaml" ]]; then
+    MCP_RULES_FILE="$(pwd)/.mcp-access-rules.yaml"
+elif [[ -f "$(pwd)/mcp-access-rules.local.yaml" ]]; then
+    MCP_RULES_FILE="$(pwd)/mcp-access-rules.local.yaml"
+elif [[ -f "$(pwd)/mcp-access-rules.yaml" ]]; then
+    MCP_RULES_FILE="$(pwd)/mcp-access-rules.yaml"
+elif [[ -f "$CONFIG_DIR/mcp-access-rules.yaml" ]]; then
+    MCP_RULES_FILE="$CONFIG_DIR/mcp-access-rules.yaml"
+fi
+
+if [[ -n "$MCP_RULES_FILE" ]]; then
+    echo "Using MCP access rules: $MCP_RULES_FILE"
+fi
+
 SESSION_ID="claude-$$"
 PODMAN_NET="claude-net"
 PROXY_CONTAINER="claude-proxy"
+MCP_PROXY_CONTAINER="claude-mcp-proxy"
 TEMP_CLAUDE_MD=""
+TEMP_MCP_CONFIG=""
 
 cleanup() {
     if [[ -n "${TEMP_CLAUDE_MD:-}" && -f "$TEMP_CLAUDE_MD" ]]; then
         rm -f "$TEMP_CLAUDE_MD"
+    fi
+    if [[ -n "${TEMP_MCP_CONFIG:-}" && -f "$TEMP_MCP_CONFIG" ]]; then
+        rm -f "$TEMP_MCP_CONFIG"
     fi
 
     # Count other running agent containers, excluding this session
@@ -137,6 +160,11 @@ cleanup() {
     RUNNING_CLAUDE=${RUNNING_CLAUDE//[[:space:]]/}
 
     if [[ "$RUNNING_CLAUDE" -eq 0 ]]; then
+        if podman container inspect "$MCP_PROXY_CONTAINER" &>/dev/null; then
+            echo "Stopping MCP proxy container ($MCP_PROXY_CONTAINER)..."
+            podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
+        fi
+
         if podman container inspect "$PROXY_CONTAINER" &>/dev/null; then
             echo "Stopping network proxy container ($PROXY_CONTAINER)..."
             podman rm -f "$PROXY_CONTAINER" &>/dev/null || true
@@ -160,12 +188,14 @@ build_proxy_image() {
     local tmpdir
     tmpdir=$(mktemp -d)
     cp "$SCRIPT_DIR/network-proxy.js" "$tmpdir/"
+    cp "$SCRIPT_DIR/mcp-proxy.js" "$tmpdir/"
     cat > "$tmpdir/Containerfile" << 'DOCKERFILE'
 FROM alpine:3.22
 RUN apk add --no-cache nodejs
 COPY network-proxy.js /usr/local/bin/network-proxy.js
-RUN chmod +x /usr/local/bin/network-proxy.js
-EXPOSE 8888
+COPY mcp-proxy.js /usr/local/bin/mcp-proxy.js
+RUN chmod +x /usr/local/bin/network-proxy.js /usr/local/bin/mcp-proxy.js
+EXPOSE 8888 8889
 ENTRYPOINT ["node", "/usr/local/bin/network-proxy.js"]
 DOCKERFILE
     echo "Building proxy image..."
@@ -222,7 +252,75 @@ fi
 PROXY_URL="http://127.0.0.1:${PROXY_PORT}"
 echo "Proxy URL: $PROXY_URL"
 
+# 4. Conditionally start MCP proxy (only when access rules config exists)
+MCP_PROXY_PORT=8889
+MCP_CONFIG_ARGS=()
 
+if [[ -n "$MCP_RULES_FILE" ]]; then
+    # Start (or restart) MCP proxy container
+    if podman container inspect "$MCP_PROXY_CONTAINER" &>/dev/null; then
+        echo "Refreshing MCP proxy container ($MCP_PROXY_CONTAINER)..."
+        podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
+    fi
+    echo "Starting MCP proxy container ($MCP_PROXY_CONTAINER)..."
+    podman run -d \
+        --pull=never \
+        --name "$MCP_PROXY_CONTAINER" \
+        --network host \
+        -v "$MCP_RULES_FILE:/etc/mcp-access-rules.yaml:ro,z" \
+        -e MCP_PROXY_PORT="$MCP_PROXY_PORT" \
+        --entrypoint node \
+        "$PROXY_IMAGE" \
+        /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml &>/dev/null
+
+    sleep 1.5
+    if ! podman container inspect -f '{{.State.Running}}' "$MCP_PROXY_CONTAINER" 2>/dev/null | grep -q true; then
+        MCP_LOGS=$(podman logs "$MCP_PROXY_CONTAINER" 2>&1 || true)
+        echo "MCP proxy container exited — rebuilding proxy image and retrying..."
+        echo "MCP proxy logs: $MCP_LOGS" >&2
+        podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
+        build_proxy_image
+        PROXY_IMAGE="localhost/claude-proxy:latest"
+        podman run -d \
+            --pull=never \
+            --name "$MCP_PROXY_CONTAINER" \
+            --network host \
+            -v "$MCP_RULES_FILE:/etc/mcp-access-rules.yaml:ro,z" \
+            -e MCP_PROXY_PORT="$MCP_PROXY_PORT" \
+            --entrypoint node \
+            "$PROXY_IMAGE" \
+            /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml &>/dev/null
+        sleep 2
+        if ! podman container inspect -f '{{.State.Running}}' "$MCP_PROXY_CONTAINER" 2>/dev/null | grep -q true; then
+            echo "Error: MCP proxy container failed to start. Logs:" >&2
+            podman logs "$MCP_PROXY_CONTAINER" >&2 2>/dev/null || true
+            exit 1
+        fi
+    fi
+    echo "MCP proxy URL: http://127.0.0.1:${MCP_PROXY_PORT}"
+
+    # Rewrite MCP config to route through local proxy
+    TEMP_MCP_CONFIG=$(mktemp)
+    python3 -c "
+import json, sys
+try:
+    with open('$STATE_DIR/.claude.json') as f:
+        cfg = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    cfg = {}
+mcp = cfg.get('mcpServers', {})
+for name, srv in mcp.items():
+    if srv.get('type') == 'http' and 'atlassian' in (srv.get('url', '') + name).lower():
+        srv['url'] = 'http://127.0.0.1:${MCP_PROXY_PORT}/v1/mcp'
+cfg['mcpServers'] = mcp
+json.dump(cfg, open('$TEMP_MCP_CONFIG', 'w'), indent=2)
+" 2>/dev/null || true
+
+    if [[ -s "$TEMP_MCP_CONFIG" ]]; then
+        MCP_CONFIG_ARGS=(-v "$TEMP_MCP_CONFIG:/home/claude/.claude.json:ro,z")
+        echo "MCP config rewritten to route Atlassian through local proxy"
+    fi
+fi
 
 TEMP_CLAUDE_MD=$(mktemp)
 echo "Enriched CLAUDE.md file: $TEMP_CLAUDE_MD"
@@ -252,6 +350,23 @@ EOF
 else
     cat >> "$TEMP_CLAUDE_MD" << EOF
 - **Network Rules File**: None specified (default network proxy rules apply).
+EOF
+fi
+
+if [[ -n "$MCP_RULES_FILE" ]]; then
+    cat >> "$TEMP_CLAUDE_MD" << EOF
+
+## MCP Access Control
+
+MCP tool calls to Atlassian are filtered by an access control proxy. Write operations are restricted to resources listed in the access rules config. Read operations pass through unrestricted.
+
+If a tool call is blocked, you will receive an error with \`MCP ACCESS DENIED\` explaining which resource was denied and what is allowed.
+
+Access rules file: \`$MCP_RULES_FILE\`
+
+\`\`\`
+$(cat "$MCP_RULES_FILE")
+\`\`\`
 EOF
 fi
 
@@ -293,6 +408,7 @@ podman run --rm -it \
     -v "$(pwd):/workspace:z" \
     -v "$STATE_DIR:/home/claude/.claude:z" \
     ${CLAUDE_MD_ARGS+"${CLAUDE_MD_ARGS[@]}"} \
+    ${MCP_CONFIG_ARGS+"${MCP_CONFIG_ARGS[@]}"} \
     ${ENV_ARGS+"${ENV_ARGS[@]}"} \
     -w /workspace \
     -e HTTP_PROXY="$PROXY_URL" \

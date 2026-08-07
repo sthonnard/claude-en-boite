@@ -3,6 +3,8 @@
 
 # Local custom Claude config & MCP rules
 .claude.json
+.mcp-access-rules.yaml
+mcp-access-rules.local.yaml
 
 # env variables
 .env
