@@ -153,7 +153,7 @@ Rules are loaded from the first existing config file in the following order:
 4. `./mcp-access-rules.yaml` (current workspace default)
 5. `~/.config/claude-podman/mcp-access-rules.yaml` (global user configuration)
 
-See [`mcp-access-rules.yaml.example`](mcp-access-rules.yaml.example) for the full format. A minimal example:
+See [`mcp-access-rules.yaml.example`](.mcp-access-rules.yaml) for the full format. A minimal example:
 
 ```yaml
 upstream: https://mcp.atlassian.com/v1/mcp
