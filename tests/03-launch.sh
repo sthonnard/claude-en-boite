@@ -79,6 +79,7 @@ if ! require_cmd podman; then
     skip "proxy-sharing between two instances" "podman not found"
     skip "two parallel proxy containers do not conflict" "podman not found"
     skip "claude-podman invocable from outside project directory" "podman not found"
+    skip "rules discovery from outside project dir shows network rules source" "podman not found"
     summary; exit $?
 fi
 
@@ -86,6 +87,7 @@ if ! require_image "localhost/claude-proxy:latest"; then
     skip "proxy-sharing between two instances" "images not built"
     skip "two parallel proxy containers do not conflict" "images not built"
     skip "claude-podman invocable from outside project directory" "images not built"
+    skip "rules discovery from outside project dir shows network rules source" "images not built"
     summary; exit $?
 fi
 
@@ -196,6 +198,45 @@ if [[ -L "$SYMLINK" ]] || [[ -x "$SYMLINK" ]]; then
     fi
 else
     skip "claude-podman invocable from outside project dir" \
+         "symlink not installed at ~/.local/bin/claude-podman"
+    skip "rules discovery from outside project dir shows network rules source" \
+         "symlink not installed at ~/.local/bin/claude-podman"
+fi
+
+# ── Test 9: rules discovery from outside project dir shows SCRIPT_DIR source ──
+SYMLINK="$HOME/.local/bin/claude-podman"
+if [[ -L "$SYMLINK" ]] || [[ -x "$SYMLINK" ]]; then
+    TMPDIR_RULES="$(mktemp -d)"
+    FAKE_BIN_DIR="$(mktemp -d)"
+    # Fake az that returns a dummy token
+    cat > "$FAKE_BIN_DIR/az" <<'AZEOF'
+#!/bin/bash
+echo "fake-token-for-test"
+AZEOF
+    # Fake podman: image inspect succeeds (skip build), everything else fails
+    cat > "$FAKE_BIN_DIR/podman" <<'PODEOF'
+#!/bin/bash
+case "$1" in
+    image) exit 0 ;;
+    --version) echo "podman version 5.0.0" ;;
+    *) exit 1 ;;
+esac
+PODEOF
+    chmod +x "$FAKE_BIN_DIR/az" "$FAKE_BIN_DIR/podman"
+
+    OUTPUT=$(cd "$TMPDIR_RULES" && env -i HOME="$HOME" PATH="$FAKE_BIN_DIR:$PATH" \
+        ANTHROPIC_FOUNDRY_BASE_URL="https://fake-endpoint.example.com" \
+        bash "$SYMLINK" 2>&1 || true)
+    rm -rf "$TMPDIR_RULES" "$FAKE_BIN_DIR"
+
+    if echo "$OUTPUT" | grep -q "Using network rules:"; then
+        pass "rules discovery from outside project dir shows network rules source"
+    else
+        fail "rules discovery from outside project dir shows network rules source" \
+             "expected 'Using network rules:' in output; got: $(echo "$OUTPUT" | head -10)"
+    fi
+else
+    skip "rules discovery from outside project dir shows network rules source" \
          "symlink not installed at ~/.local/bin/claude-podman"
 fi
 

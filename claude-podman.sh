@@ -97,6 +97,10 @@ elif [[ -f "$SCRIPT_DIR/network-rules.txt" ]]; then
     PROJECT_RULES_FILE="$SCRIPT_DIR/network-rules.txt"
 fi
 
+if [[ -n "$PROJECT_RULES_FILE" ]]; then
+    echo "Using network rules: $PROJECT_RULES_FILE"
+fi
+
 # Combine default and project rules into active rules file
 TMP_RULES=$(mktemp)
 if [[ -f "$SCRIPT_DIR/network-rules.txt" ]]; then
@@ -122,6 +126,14 @@ rm -f "$ACTIVE_RULES_FILE.tmp" "$TMP_RULES"
 # Ensure the rules file actually exists as a regular file before we volume-mount it.
 touch "$ACTIVE_RULES_FILE"
 
+if [[ ! -s "$ACTIVE_RULES_FILE" ]]; then
+    echo "Error: no network rules found. Searched:" >&2
+    echo "  - $(pwd)/.claude-network-rules, network-rules.local.txt, network-rules.txt" >&2
+    echo "  - $CONFIG_DIR/network-rules.txt" >&2
+    echo "  - $SCRIPT_DIR/network-rules.txt" >&2
+    exit 1
+fi
+
 # Discover MCP access rules file
 MCP_RULES_FILE=""
 if [[ -n "${MCP_RULES_FILE_ENV:-}" && -f "$MCP_RULES_FILE_ENV" ]]; then
@@ -134,10 +146,17 @@ elif [[ -f "$(pwd)/mcp-access-rules.yaml" ]]; then
     MCP_RULES_FILE="$(pwd)/mcp-access-rules.yaml"
 elif [[ -f "$CONFIG_DIR/mcp-access-rules.yaml" ]]; then
     MCP_RULES_FILE="$CONFIG_DIR/mcp-access-rules.yaml"
+elif [[ -f "$SCRIPT_DIR/.mcp-access-rules.yaml" ]]; then
+    MCP_RULES_FILE="$SCRIPT_DIR/.mcp-access-rules.yaml"
+elif [[ -f "$SCRIPT_DIR/mcp-access-rules.yaml" ]]; then
+    MCP_RULES_FILE="$SCRIPT_DIR/mcp-access-rules.yaml"
 fi
 
 if [[ -n "$MCP_RULES_FILE" ]]; then
     echo "Using MCP access rules: $MCP_RULES_FILE"
+else
+    echo "Warning: no MCP access rules found. MCP calls will not be filtered." >&2
+    echo "  Searched: $(pwd)/.mcp-access-rules.yaml, $CONFIG_DIR/, $SCRIPT_DIR/" >&2
 fi
 
 # Generate MITM certificates for MCP interception (one-time)
@@ -248,6 +267,16 @@ start_proxy() {
 
 PROXY_PORT=8888
 MCP_PROXY_PORT=8889
+
+# Kill orphaned processes on proxy ports (leftover from crashed containers)
+for _port in "$PROXY_PORT" "$MCP_PROXY_PORT"; do
+    _pid=$(ss -tlnp "sport = :$_port" 2>/dev/null | awk -F'pid=' '/pid=/{print $2}' | cut -d, -f1)
+    if [[ -n "$_pid" ]]; then
+        echo "Killing orphaned process (PID $_pid) on port $_port..."
+        kill "$_pid" 2>/dev/null || true
+        sleep 0.5
+    fi
+done
 
 # 2. Ensure the shared proxy container is running with current rules & environment.
 if podman container inspect "$PROXY_CONTAINER" &>/dev/null; then
