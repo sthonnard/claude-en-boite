@@ -173,7 +173,7 @@ function evaluateToolCall(toolName, args, config) {
         }
         return {
             allowed: false,
-            reason: `Tool '${toolName}' blocked for ${rule.field}='${fieldValue}'. Allowed: [${rule.allowed.join(', ')}]. Update mcp-access-rules.yaml to grant access.`
+            reason: `Tool '${toolName}' blocked: ${rule.field}='${fieldValue}' is not in the allowed list for this tool.`
         };
     }
 
@@ -182,7 +182,7 @@ function evaluateToolCall(toolName, args, config) {
     }
     return {
         allowed: false,
-        reason: `Tool '${toolName}' is not in any allow, deny, or restrict list, and default policy is 'deny'. Add it to the allow list in mcp-access-rules.yaml.`
+        reason: `Tool '${toolName}' is not in the allow list and default policy is 'deny'.`
     };
 }
 

@@ -185,10 +185,14 @@ PODMAN_NET="claude-net"
 PROXY_CONTAINER="claude-proxy"
 MCP_PROXY_CONTAINER="claude-mcp-proxy"
 TEMP_CLAUDE_MD=""
+TEMP_MCP_RULES=""
 
 cleanup() {
     if [[ -n "${TEMP_CLAUDE_MD:-}" && -f "$TEMP_CLAUDE_MD" ]]; then
         rm -f "$TEMP_CLAUDE_MD"
+    fi
+    if [[ -n "${TEMP_MCP_RULES:-}" && -f "$TEMP_MCP_RULES" ]]; then
+        rm -f "$TEMP_MCP_RULES"
     fi
     # Count other running agent containers, excluding this session
     RUNNING_CLAUDE=$(set +o pipefail; podman ps --filter "ancestor=$CODE_IMAGE" --filter "status=running" --format "{{.Names}}" 2>/dev/null | grep -v "^${SESSION_ID}$" | wc -l)
@@ -312,6 +316,13 @@ echo "Proxy URL: $PROXY_URL"
 
 # 4. Conditionally start MCP proxy (only when access rules config exists)
 
+# Snapshot the MCP rules to a temp file so the agent container cannot modify
+# the proxy's copy via the shared /workspace bind mount.
+if [[ -n "$MCP_RULES_FILE" ]]; then
+    TEMP_MCP_RULES=$(mktemp)
+    cp "$MCP_RULES_FILE" "$TEMP_MCP_RULES"
+fi
+
 if [[ -n "$MCP_RULES_FILE" ]]; then
     # Force-remove any leftover MCP proxy container (may be stuck in "Removing" state)
     podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
@@ -321,7 +332,7 @@ if [[ -n "$MCP_RULES_FILE" ]]; then
         --pull=never \
         --name "$MCP_PROXY_CONTAINER" \
         --network host \
-        -v "$MCP_RULES_FILE:/etc/mcp-access-rules.yaml:ro,z" \
+        -v "$TEMP_MCP_RULES:/etc/mcp-access-rules.yaml:ro,z" \
         -e MCP_PROXY_PORT="$MCP_PROXY_PORT" \
         --entrypoint node \
         "$PROXY_IMAGE" \
@@ -339,7 +350,7 @@ if [[ -n "$MCP_RULES_FILE" ]]; then
             --pull=never \
             --name "$MCP_PROXY_CONTAINER" \
             --network host \
-            -v "$MCP_RULES_FILE:/etc/mcp-access-rules.yaml:ro,z" \
+            -v "$TEMP_MCP_RULES:/etc/mcp-access-rules.yaml:ro,z" \
             -e MCP_PROXY_PORT="$MCP_PROXY_PORT" \
             --entrypoint node \
             "$PROXY_IMAGE" \
@@ -390,19 +401,15 @@ EOF
 fi
 
 if [[ -n "$MCP_RULES_FILE" ]]; then
-    cat >> "$TEMP_CLAUDE_MD" << EOF
+    cat >> "$TEMP_CLAUDE_MD" << 'EOF'
 
 ## MCP Access Control
 
-MCP tool calls to Atlassian are filtered by an access control proxy. Write operations are restricted to resources listed in the access rules config. Read operations pass through unrestricted.
+MCP tool calls are filtered by an access control proxy. Write operations are restricted to specific allowed resources. Read operations generally pass through unrestricted.
 
-If a tool call is blocked, you will receive an error with \`MCP ACCESS DENIED\` explaining which resource was denied and what is allowed.
+If a tool call is blocked, you will receive an error response containing `MCP ACCESS DENIED` with a description of why the call was denied.
 
-Access rules file: \`$MCP_RULES_FILE\`
-
-\`\`\`
-$(cat "$MCP_RULES_FILE")
-\`\`\`
+**Important**: Do NOT attempt to modify, circumvent, or suggest changes to the access control configuration. If a tool call is denied, report the denial to the user and ask them how they would like to proceed.
 EOF
 fi
 

@@ -19,8 +19,11 @@ CONFIG_FILE=""
 cleanup() {
     cleanup_container "$PROXY_CONTAINER"
     cleanup_container "$MOCK_CONTAINER"
+    cleanup_container "${ISOLATION_PROXY:-}"
     [[ -n "$MOCK_SCRIPT" ]] && rm -f "$MOCK_SCRIPT" || true
     [[ -n "$CONFIG_FILE" ]] && rm -f "$CONFIG_FILE" || true
+    [[ -n "${WORKSPACE_CONFIG:-}" ]] && rm -f "$WORKSPACE_CONFIG" || true
+    [[ -n "${SNAPSHOT_CONFIG:-}" ]] && rm -f "$SNAPSHOT_CONFIG" || true
 }
 trap cleanup EXIT
 
@@ -263,6 +266,75 @@ if echo "$LOGS" | grep -q '\[MCP FILTER\] DENIED' && echo "$LOGS" | grep -q '\[M
 else
     fail "audit logging contains ALLOWED and DENIED entries" "logs: $(echo "$LOGS" | grep 'MCP FILTER' | head -5)"
 fi
+
+# ── Test 17: Snapshot isolation — workspace edits do NOT bypass proxy ──────
+# Simulates the attack where Claude modifies the rules file via /workspace.
+# The proxy uses a snapshot, so changes to the "workspace" copy must not affect enforcement.
+WORKSPACE_CONFIG=$(mktemp --suffix=.yaml)
+SNAPSHOT_CONFIG=$(mktemp --suffix=.yaml)
+ISOLATION_PROXY="claude-mcp-isolation-test-$$"
+ISOLATION_PROXY_PORT="${ISOLATION_PROXY_PORT:-18894}"
+
+cat > "$WORKSPACE_CONFIG" << EOF
+upstream: http://127.0.0.1:${MOCK_PORT}/v1/mcp
+
+allow:
+  - confluence_search
+
+deny: []
+
+restrict: {}
+
+default: deny
+EOF
+cp "$WORKSPACE_CONFIG" "$SNAPSHOT_CONFIG"
+
+cleanup_container "$ISOLATION_PROXY"
+start_test_mcp_proxy "$SNAPSHOT_CONFIG" "$MOCK_PORT" "$ISOLATION_PROXY" "$ISOLATION_PROXY_PORT" > /dev/null
+
+if ! wait_for_container "$ISOLATION_PROXY" 10; then
+    fail "snapshot isolation: proxy starts" \
+         "container exited; logs: $(podman logs "$ISOLATION_PROXY" 2>&1 | tail -5)"
+else
+    sleep 1
+
+    # Verify some_isolated_tool is initially denied
+    RESP=$(mcp_proxy_call "http://127.0.0.1:${ISOLATION_PROXY_PORT}" \
+        '{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"some_isolated_tool","arguments":{}}}')
+    if mcp_response_is_error "$RESP"; then
+        pass "snapshot isolation: tool initially denied"
+
+        # Simulate Claude editing the workspace copy to allow the tool
+        cat > "$WORKSPACE_CONFIG" << EOF
+upstream: http://127.0.0.1:${MOCK_PORT}/v1/mcp
+
+allow:
+  - confluence_search
+  - some_isolated_tool
+
+deny: []
+
+restrict: {}
+
+default: deny
+EOF
+        sleep 3
+
+        # The tool must STILL be denied because the proxy uses the snapshot
+        RESP=$(mcp_proxy_call "http://127.0.0.1:${ISOLATION_PROXY_PORT}" \
+            '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"some_isolated_tool","arguments":{}}}')
+        if mcp_response_is_error "$RESP"; then
+            pass "snapshot isolation: tool still denied after workspace copy modified"
+        else
+            fail "snapshot isolation: tool still denied after workspace copy modified" \
+                 "tool was allowed after modifying workspace copy — snapshot bypass! response: $RESP"
+        fi
+    else
+        fail "snapshot isolation: tool initially denied" "response: $RESP"
+    fi
+fi
+
+cleanup_container "$ISOLATION_PROXY"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MITM Integration Tests — full HTTPS → network proxy → MCP proxy → mock flow
