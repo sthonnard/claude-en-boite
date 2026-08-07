@@ -252,6 +252,81 @@ mcp_response_is_forwarded() {
     echo "$response" | grep -q 'mock-ok'
 }
 
+# ── MITM test helpers ────────────────────────────────────────────────────────
+
+# Generate test CA + server certs for MITM testing.
+# Usage: generate_test_mitm_certs <hostname> <output-dir>
+generate_test_mitm_certs() {
+    local hostname="$1"
+    local cert_dir="$2"
+    mkdir -p "$cert_dir"
+    openssl req -x509 -newkey rsa:2048 -keyout "$cert_dir/ca.key" -out "$cert_dir/ca.crt" \
+        -days 1 -nodes -subj "/CN=Test MCP Proxy CA" 2>/dev/null
+    openssl req -newkey rsa:2048 -keyout "$cert_dir/mitm.key" -out "$cert_dir/mitm.csr" \
+        -nodes -subj "/CN=$hostname" 2>/dev/null
+    openssl x509 -req -in "$cert_dir/mitm.csr" -CA "$cert_dir/ca.crt" -CAkey "$cert_dir/ca.key" \
+        -CAcreateserial -out "$cert_dir/mitm.crt" -days 1 \
+        -extfile <(echo "subjectAltName=DNS:$hostname") 2>/dev/null
+    rm -f "$cert_dir/mitm.csr" "$cert_dir/ca.srl"
+}
+
+# Start the network proxy with MITM interception enabled.
+# Usage: start_test_proxy_with_mitm <rules-file> <cert-dir> <mitm-host> <mcp-proxy-port> [container-name] [proxy-port]
+start_test_proxy_with_mitm() {
+    local rules_file="$1"
+    local cert_dir="$2"
+    local mitm_host="$3"
+    local mcp_proxy_port="$4"
+    local cname="${5:-claude-proxy-mitm-test}"
+    local proxy_port="${6:-18893}"
+
+    podman run -d \
+        --pull=never \
+        --name "$cname" \
+        --network host \
+        -v "${rules_file}:/etc/claude-network-rules.txt:ro,z" \
+        -v "${cert_dir}/mitm.crt:/etc/mitm.crt:ro,z" \
+        -v "${cert_dir}/mitm.key:/etc/mitm.key:ro,z" \
+        -e PROXY_PORT="$proxy_port" \
+        -e MCP_MITM_HOST="$mitm_host" \
+        -e MCP_MITM_CERT="/etc/mitm.crt" \
+        -e MCP_MITM_KEY="/etc/mitm.key" \
+        -e MCP_PROXY_PORT="$mcp_proxy_port" \
+        localhost/claude-proxy:latest \
+        /etc/claude-network-rules.txt &>/dev/null
+    echo "$cname"
+}
+
+# Send an HTTPS request through the MITM proxy and return the response body.
+# Usage: mitm_proxy_call <proxy-port> <ca-cert> <mitm-host> <json-body>
+mitm_proxy_call() {
+    local proxy_port="$1"
+    local ca_cert="$2"
+    local mitm_host="$3"
+    local json_body="$4"
+    curl -s -X POST "https://${mitm_host}/v1/mcp" \
+        --proxy "http://127.0.0.1:${proxy_port}" \
+        --cacert "$ca_cert" \
+        -H "Content-Type: application/json" \
+        -d "$json_body" \
+        --max-time 10 2>/dev/null
+}
+
+# Send an HTTPS request through the MITM proxy and return the HTTP status code.
+# Usage: mitm_proxy_status <proxy-port> <ca-cert> <mitm-host> <json-body>
+mitm_proxy_status() {
+    local proxy_port="$1"
+    local ca_cert="$2"
+    local mitm_host="$3"
+    local json_body="$4"
+    curl -s -o /dev/null -w '%{http_code}' -X POST "https://${mitm_host}/v1/mcp" \
+        --proxy "http://127.0.0.1:${proxy_port}" \
+        --cacert "$ca_cert" \
+        -H "Content-Type: application/json" \
+        -d "$json_body" \
+        --max-time 10 2>/dev/null || echo "000"
+}
+
 # ── Proxy helpers ─────────────────────────────────────────────────────────────
 
 # Start the proxy container for testing.

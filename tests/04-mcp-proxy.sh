@@ -264,4 +264,116 @@ else
     fail "audit logging contains ALLOWED and DENIED entries" "logs: $(echo "$LOGS" | grep 'MCP FILTER' | head -5)"
 fi
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MITM Integration Tests — full HTTPS → network proxy → MCP proxy → mock flow
+# ══════════════════════════════════════════════════════════════════════════════
+
+MITM_HOST="testmcp.example.com"
+MITM_NET_PROXY_PORT="${MITM_NET_PROXY_PORT:-18893}"
+MITM_CERT_DIR=""
+MITM_NET_CONTAINER="claude-proxy-mitm-test-$$"
+MITM_RULES_FILE=""
+
+orig_cleanup=$(trap -p EXIT | sed "s/^trap -- '//;s/' EXIT$//")
+trap 'cleanup_container "$MITM_NET_CONTAINER"; [[ -n "${MITM_CERT_DIR:-}" ]] && rm -rf "$MITM_CERT_DIR" || true; [[ -n "${MITM_RULES_FILE:-}" ]] && rm -f "$MITM_RULES_FILE" || true; '"$orig_cleanup" EXIT
+
+if ! require_cmd openssl; then
+    skip "MITM integration tests" "openssl not found"
+else
+
+section "04b · MITM Integration (HTTPS → network proxy → MCP proxy → mock)"
+
+# ── Generate test certs ─────────────────────────────────────────────────────
+MITM_CERT_DIR=$(mktemp -d)
+generate_test_mitm_certs "$MITM_HOST" "$MITM_CERT_DIR"
+
+if [[ -f "$MITM_CERT_DIR/ca.crt" && -f "$MITM_CERT_DIR/mitm.crt" && -f "$MITM_CERT_DIR/mitm.key" ]]; then
+    pass "MITM test certificates generated"
+else
+    fail "MITM test certificates generated" "missing cert files in $MITM_CERT_DIR"
+    summary; exit 1
+fi
+
+# ── Network rules allowing the MITM host ────────────────────────────────────
+MITM_RULES_FILE=$(mktemp --suffix=.txt)
+cat > "$MITM_RULES_FILE" << EOF
+https://$MITM_HOST
+EOF
+
+# ── Start network proxy with MITM ──────────────────────────────────────────
+cleanup_container "$MITM_NET_CONTAINER"
+start_test_proxy_with_mitm "$MITM_RULES_FILE" "$MITM_CERT_DIR" "$MITM_HOST" "$PROXY_PORT" "$MITM_NET_CONTAINER" "$MITM_NET_PROXY_PORT" >/dev/null
+
+if wait_for_container "$MITM_NET_CONTAINER" 10; then
+    pass "network proxy with MITM starts"
+else
+    fail "network proxy with MITM starts" \
+         "container exited; logs: $(podman logs "$MITM_NET_CONTAINER" 2>&1 | tail -5)"
+    summary; exit 1
+fi
+sleep 1
+
+# ── Verify MITM log message ─────────────────────────────────────────────────
+MITM_LOGS=$(podman logs "$MITM_NET_CONTAINER" 2>&1)
+if echo "$MITM_LOGS" | grep -q "MITM interception enabled"; then
+    pass "network proxy logs MITM interception enabled"
+else
+    fail "network proxy logs MITM interception enabled" "logs: $MITM_LOGS"
+fi
+
+# ── Test 17: HTTPS request through MITM reaches MCP proxy and mock upstream ─
+RESP=$(mitm_proxy_call "$MITM_NET_PROXY_PORT" "$MITM_CERT_DIR/ca.crt" "$MITM_HOST" \
+    '{"jsonrpc":"2.0","id":100,"method":"initialize","params":{}}')
+if mcp_response_is_forwarded "$RESP"; then
+    pass "MITM: HTTPS initialize passes through to mock upstream"
+else
+    fail "MITM: HTTPS initialize passes through to mock upstream" "response: $RESP"
+fi
+
+# ── Test 18: Allowed tool through MITM ───────────────────────────────────────
+RESP=$(mitm_proxy_call "$MITM_NET_PROXY_PORT" "$MITM_CERT_DIR/ca.crt" "$MITM_HOST" \
+    '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"confluence_search","arguments":{"query":"test"}}}')
+if mcp_response_is_forwarded "$RESP"; then
+    pass "MITM: allowed tool (confluence_search) passes through"
+else
+    fail "MITM: allowed tool (confluence_search) passes through" "response: $RESP"
+fi
+
+# ── Test 19: Denied tool blocked through MITM ───────────────────────────────
+RESP=$(mitm_proxy_call "$MITM_NET_PROXY_PORT" "$MITM_CERT_DIR/ca.crt" "$MITM_HOST" \
+    '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"confluence_delete_page","arguments":{"pageId":"111"}}}')
+if mcp_response_is_error "$RESP"; then
+    pass "MITM: denied tool (confluence_delete_page) is blocked"
+else
+    fail "MITM: denied tool (confluence_delete_page) is blocked" "response: $RESP"
+fi
+
+# ── Test 20: Restricted tool with allowed resource through MITM ─────────────
+RESP=$(mitm_proxy_call "$MITM_NET_PROXY_PORT" "$MITM_CERT_DIR/ca.crt" "$MITM_HOST" \
+    '{"jsonrpc":"2.0","id":103,"method":"tools/call","params":{"name":"confluence_update_page","arguments":{"pageId":"111","body":"ok"}}}')
+if mcp_response_is_forwarded "$RESP"; then
+    pass "MITM: restricted tool with allowed resource (pageId=111) passes"
+else
+    fail "MITM: restricted tool with allowed resource (pageId=111) passes" "response: $RESP"
+fi
+
+# ── Test 21: Restricted tool with disallowed resource blocked through MITM ──
+RESP=$(mitm_proxy_call "$MITM_NET_PROXY_PORT" "$MITM_CERT_DIR/ca.crt" "$MITM_HOST" \
+    '{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"confluence_update_page","arguments":{"pageId":"999","body":"nope"}}}')
+if mcp_response_is_error "$RESP"; then
+    pass "MITM: restricted tool with disallowed resource (pageId=999) blocked"
+else
+    fail "MITM: restricted tool with disallowed resource (pageId=999) blocked" "response: $RESP"
+fi
+
+# ── Test 22: MITM intercept logged by network proxy ─────────────────────────
+MITM_LOGS=$(podman logs "$MITM_NET_CONTAINER" 2>&1)
+if echo "$MITM_LOGS" | grep -q "MITM INTERCEPT"; then
+    pass "network proxy logs MITM INTERCEPT for $MITM_HOST"
+else
+    fail "network proxy logs MITM INTERCEPT for $MITM_HOST" "logs: $(echo "$MITM_LOGS" | tail -5)"
+fi
+
+fi  # end openssl guard
+
 summary

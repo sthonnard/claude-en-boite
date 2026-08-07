@@ -1,11 +1,30 @@
 #!/usr/bin/env node
 const http = require('http');
 const net = require('net');
+const tls = require('tls');
 const url = require('url');
 const fs = require('fs');
 
 const rulesFile = process.argv[2] || '/etc/claude-network-rules.txt';
 const PORT = parseInt(process.env.PROXY_PORT || '8888', 10);
+
+// ── MITM config for MCP interception ────────────────────────────────────────
+const MITM_HOST = (process.env.MCP_MITM_HOST || '').toLowerCase();
+const MITM_CERT_PATH = process.env.MCP_MITM_CERT || '';
+const MITM_KEY_PATH = process.env.MCP_MITM_KEY || '';
+const MCP_PROXY_PORT = parseInt(process.env.MCP_PROXY_PORT || '8889', 10);
+
+let mitmCert = null;
+let mitmKey = null;
+if (MITM_HOST && MITM_CERT_PATH && MITM_KEY_PATH) {
+    try {
+        mitmCert = fs.readFileSync(MITM_CERT_PATH);
+        mitmKey = fs.readFileSync(MITM_KEY_PATH);
+        console.log(`[NETWORK FILTER] MITM interception enabled for ${MITM_HOST} → localhost:${MCP_PROXY_PORT}`);
+    } catch (e) {
+        console.warn(`[NETWORK FILTER] Warning: Could not load MITM certs: ${e.message}. MITM disabled.`);
+    }
+}
 
 function parseRule(line) {
     line = line.trim();
@@ -166,6 +185,39 @@ const server = http.createServer((req, res) => {
     }
 });
 
+// ── MITM handler: terminate TLS and pipe to MCP proxy ───────────────────────
+
+function handleMitm(clientSocket, head) {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+
+    const tlsSocket = new tls.TLSSocket(clientSocket, {
+        isServer: true,
+        key: mitmKey,
+        cert: mitmCert,
+    });
+
+    tlsSocket.on('error', (err) => {
+        console.error(`[NETWORK FILTER] MITM TLS error: ${err.message}`);
+        clientSocket.destroy();
+    });
+
+    const proxySocket = net.connect(MCP_PROXY_PORT, '127.0.0.1', () => {
+        if (head && head.length) proxySocket.write(head);
+        tlsSocket.pipe(proxySocket);
+        proxySocket.pipe(tlsSocket);
+    });
+
+    proxySocket.on('error', (err) => {
+        console.error(`[NETWORK FILTER] MITM → MCP proxy error: ${err.message}`);
+        tlsSocket.destroy();
+    });
+
+    tlsSocket.on('close', () => proxySocket.destroy());
+    proxySocket.on('close', () => tlsSocket.destroy());
+}
+
+// ── CONNECT handler ─────────────────────────────────────────────────────────
+
 server.on('connect', (req, clientSocket, head) => {
     try {
         const parts = req.url.split(':');
@@ -182,6 +234,13 @@ server.on('connect', (req, clientSocket, head) => {
                 '\r\n' +
                 `403 Forbidden: Endpoint https://${targetHost}:${targetPort} not allowed by network security policy.\r\n`
             );
+            return;
+        }
+
+        // MITM interception for MCP-filtered hosts
+        if (mitmCert && mitmKey && targetHost.toLowerCase() === MITM_HOST) {
+            console.log(`[NETWORK FILTER] MITM INTERCEPT ${targetHost}:${targetPort} → MCP proxy localhost:${MCP_PROXY_PORT}`);
+            handleMitm(clientSocket, head);
             return;
         }
 

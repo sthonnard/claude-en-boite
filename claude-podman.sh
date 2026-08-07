@@ -140,21 +140,37 @@ if [[ -n "$MCP_RULES_FILE" ]]; then
     echo "Using MCP access rules: $MCP_RULES_FILE"
 fi
 
+# Generate MITM certificates for MCP interception (one-time)
+CERT_DIR="$CONFIG_DIR/certs"
+MCP_MITM_HOST=""
+if [[ -n "$MCP_RULES_FILE" ]]; then
+    # Extract the upstream host from the config
+    MCP_MITM_HOST=$(grep -E '^upstream:' "$MCP_RULES_FILE" | head -1 | sed 's/^upstream:[[:space:]]*//' | sed 's|https\?://||' | sed 's|/.*||' | tr -d '[:space:]')
+    if [[ -n "$MCP_MITM_HOST" && ! -f "$CERT_DIR/ca.crt" ]]; then
+        echo "Generating MITM certificates for MCP interception..."
+        mkdir -p "$CERT_DIR"
+        openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
+            -days 3650 -nodes -subj "/CN=Claude MCP Proxy CA" 2>/dev/null
+        openssl req -newkey rsa:2048 -keyout "$CERT_DIR/mitm.key" -out "$CERT_DIR/mitm.csr" \
+            -nodes -subj "/CN=$MCP_MITM_HOST" 2>/dev/null
+        openssl x509 -req -in "$CERT_DIR/mitm.csr" -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
+            -CAcreateserial -out "$CERT_DIR/mitm.crt" -days 3650 \
+            -extfile <(echo "subjectAltName=DNS:$MCP_MITM_HOST") 2>/dev/null
+        rm -f "$CERT_DIR/mitm.csr" "$CERT_DIR/ca.srl"
+        echo "MITM certificates generated for $MCP_MITM_HOST"
+    fi
+fi
+
 SESSION_ID="claude-$$"
 PODMAN_NET="claude-net"
 PROXY_CONTAINER="claude-proxy"
 MCP_PROXY_CONTAINER="claude-mcp-proxy"
 TEMP_CLAUDE_MD=""
-TEMP_MCP_CONFIG=""
 
 cleanup() {
     if [[ -n "${TEMP_CLAUDE_MD:-}" && -f "$TEMP_CLAUDE_MD" ]]; then
         rm -f "$TEMP_CLAUDE_MD"
     fi
-    if [[ -n "${TEMP_MCP_CONFIG:-}" && -f "$TEMP_MCP_CONFIG" ]]; then
-        rm -f "$TEMP_MCP_CONFIG"
-    fi
-
     # Count other running agent containers, excluding this session
     RUNNING_CLAUDE=$(set +o pipefail; podman ps --filter "ancestor=$CODE_IMAGE" --filter "status=running" --format "{{.Names}}" 2>/dev/null | grep -v "^${SESSION_ID}$" | wc -l)
     RUNNING_CLAUDE=${RUNNING_CLAUDE//[[:space:]]/}
@@ -207,6 +223,17 @@ DOCKERFILE
 # Using host network ensures full access to host DNS, VPNs, and Azure endpoints,
 # while binding to port 8888 so agent containers can proxy through 127.0.0.1:8888.
 start_proxy() {
+    local mitm_args=()
+    if [[ -n "$MCP_MITM_HOST" && -f "$CERT_DIR/mitm.crt" && -f "$CERT_DIR/mitm.key" ]]; then
+        mitm_args=(
+            -v "$CERT_DIR/mitm.crt:/etc/mitm.crt:ro,z"
+            -v "$CERT_DIR/mitm.key:/etc/mitm.key:ro,z"
+            -e MCP_MITM_HOST="$MCP_MITM_HOST"
+            -e MCP_MITM_CERT="/etc/mitm.crt"
+            -e MCP_MITM_KEY="/etc/mitm.key"
+            -e MCP_PROXY_PORT="$MCP_PROXY_PORT"
+        )
+    fi
     podman run -d \
         --pull=never \
         --name "$PROXY_CONTAINER" \
@@ -214,11 +241,13 @@ start_proxy() {
         -v "$ACTIVE_RULES_FILE:/etc/claude-network-rules.txt:ro,z" \
         -e ANTHROPIC_FOUNDRY_BASE_URL="$ANTHROPIC_FOUNDRY_BASE_URL" \
         -e PROXY_PORT="$PROXY_PORT" \
+        ${mitm_args+"${mitm_args[@]}"} \
         "$PROXY_IMAGE" \
         /etc/claude-network-rules.txt &>/dev/null
 }
 
 PROXY_PORT=8888
+MCP_PROXY_PORT=8889
 
 # 2. Ensure the shared proxy container is running with current rules & environment.
 if podman container inspect "$PROXY_CONTAINER" &>/dev/null; then
@@ -253,17 +282,13 @@ PROXY_URL="http://127.0.0.1:${PROXY_PORT}"
 echo "Proxy URL: $PROXY_URL"
 
 # 4. Conditionally start MCP proxy (only when access rules config exists)
-MCP_PROXY_PORT=8889
-MCP_CONFIG_ARGS=()
 
 if [[ -n "$MCP_RULES_FILE" ]]; then
-    # Start (or restart) MCP proxy container
-    if podman container inspect "$MCP_PROXY_CONTAINER" &>/dev/null; then
-        echo "Refreshing MCP proxy container ($MCP_PROXY_CONTAINER)..."
-        podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
-    fi
+    # Force-remove any leftover MCP proxy container (may be stuck in "Removing" state)
+    podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
+
     echo "Starting MCP proxy container ($MCP_PROXY_CONTAINER)..."
-    podman run -d \
+    MCP_RUN_OUTPUT=$(podman run -d \
         --pull=never \
         --name "$MCP_PROXY_CONTAINER" \
         --network host \
@@ -271,17 +296,17 @@ if [[ -n "$MCP_RULES_FILE" ]]; then
         -e MCP_PROXY_PORT="$MCP_PROXY_PORT" \
         --entrypoint node \
         "$PROXY_IMAGE" \
-        /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml &>/dev/null
+        /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml 2>&1) || true
 
     sleep 1.5
     if ! podman container inspect -f '{{.State.Running}}' "$MCP_PROXY_CONTAINER" 2>/dev/null | grep -q true; then
-        MCP_LOGS=$(podman logs "$MCP_PROXY_CONTAINER" 2>&1 || true)
-        echo "MCP proxy container exited — rebuilding proxy image and retrying..."
-        echo "MCP proxy logs: $MCP_LOGS" >&2
+        echo "MCP proxy container exited — rebuilding proxy image and retrying..." >&2
+        echo "Podman output: $MCP_RUN_OUTPUT" >&2
+        podman logs "$MCP_PROXY_CONTAINER" >&2 2>/dev/null || true
         podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
         build_proxy_image
         PROXY_IMAGE="localhost/claude-proxy:latest"
-        podman run -d \
+        MCP_RUN_OUTPUT=$(podman run -d \
             --pull=never \
             --name "$MCP_PROXY_CONTAINER" \
             --network host \
@@ -289,37 +314,19 @@ if [[ -n "$MCP_RULES_FILE" ]]; then
             -e MCP_PROXY_PORT="$MCP_PROXY_PORT" \
             --entrypoint node \
             "$PROXY_IMAGE" \
-            /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml &>/dev/null
+            /usr/local/bin/mcp-proxy.js /etc/mcp-access-rules.yaml 2>&1) || true
         sleep 2
         if ! podman container inspect -f '{{.State.Running}}' "$MCP_PROXY_CONTAINER" 2>/dev/null | grep -q true; then
-            echo "Error: MCP proxy container failed to start. Logs:" >&2
+            echo "Error: MCP proxy failed to start. Refusing to launch without access control." >&2
+            echo "Podman output: $MCP_RUN_OUTPUT" >&2
             podman logs "$MCP_PROXY_CONTAINER" >&2 2>/dev/null || true
+            podman rm -f "$MCP_PROXY_CONTAINER" &>/dev/null || true
             exit 1
         fi
     fi
+
     echo "MCP proxy URL: http://127.0.0.1:${MCP_PROXY_PORT}"
-
-    # Rewrite MCP config to route through local proxy
-    TEMP_MCP_CONFIG=$(mktemp)
-    python3 -c "
-import json, sys
-try:
-    with open('$STATE_DIR/.claude.json') as f:
-        cfg = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    cfg = {}
-mcp = cfg.get('mcpServers', {})
-for name, srv in mcp.items():
-    if srv.get('type') == 'http' and 'atlassian' in (srv.get('url', '') + name).lower():
-        srv['url'] = 'http://127.0.0.1:${MCP_PROXY_PORT}/v1/mcp'
-cfg['mcpServers'] = mcp
-json.dump(cfg, open('$TEMP_MCP_CONFIG', 'w'), indent=2)
-" 2>/dev/null || true
-
-    if [[ -s "$TEMP_MCP_CONFIG" ]]; then
-        MCP_CONFIG_ARGS=(-v "$TEMP_MCP_CONFIG:/home/claude/.claude.json:ro,z")
-        echo "MCP config rewritten to route Atlassian through local proxy"
-    fi
+    echo "MCP MITM intercept: ${MCP_MITM_HOST} → MCP proxy via network proxy TLS termination"
 fi
 
 TEMP_CLAUDE_MD=$(mktemp)
@@ -386,6 +393,15 @@ done
 
 AGENT_NET_ARGS=(--network host)
 
+# Mount MITM CA cert so the code container trusts our TLS interception
+MCP_CA_ARGS=()
+if [[ -n "$MCP_MITM_HOST" && -f "$CERT_DIR/ca.crt" ]]; then
+    MCP_CA_ARGS=(
+        -v "$CERT_DIR/ca.crt:/etc/claude-mcp-ca.crt:ro,z"
+        -e NODE_EXTRA_CA_CERTS="/etc/claude-mcp-ca.crt"
+    )
+fi
+
 # 3. Check if podman version is >= 4.3.0 to support keep-id mapping to container UID/GID 1000
 PODMAN_VERSION=$(podman --version 2>/dev/null | awk '{print $3}' || echo "0.0.0")
 IFS='.' read -r major minor patch <<< "$PODMAN_VERSION" || true
@@ -408,7 +424,7 @@ podman run --rm -it \
     -v "$(pwd):/workspace:z" \
     -v "$STATE_DIR:/home/claude/.claude:z" \
     ${CLAUDE_MD_ARGS+"${CLAUDE_MD_ARGS[@]}"} \
-    ${MCP_CONFIG_ARGS+"${MCP_CONFIG_ARGS[@]}"} \
+    ${MCP_CA_ARGS+"${MCP_CA_ARGS[@]}"} \
     ${ENV_ARGS+"${ENV_ARGS[@]}"} \
     -w /workspace \
     -e HTTP_PROXY="$PROXY_URL" \

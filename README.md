@@ -87,7 +87,7 @@ The script:
 1. Fetches a short-lived Azure Cognitive Services token via `az account get-access-token`
 2. Mounts the current directory into the container as `/workspace`
 3. Passes an enriched `CLAUDE.md` to the container (including host instructions from `~/.claude/CLAUDE.md` if present, enriched with Alpine Linux environment and network rules context)
-4. If an `mcp-access-rules.yaml` config is present, starts the MCP access control proxy and rewrites the MCP server URL to route through it
+4. If an `mcp-access-rules.yaml` config is present, starts the MCP access control proxy and intercepts MCP traffic via TLS MITM in the network proxy
 5. Launches an interactive Claude Code session against the Azure AI Foundry endpoint
 
 Any extra arguments are forwarded to `claude`:
@@ -140,9 +140,9 @@ When an `mcp-access-rules.yaml` configuration file is present, `claude-podman` s
 
 The MCP proxy sits between Claude Code and `mcp.atlassian.com`, inspecting JSON-RPC `tools/call` requests. Write operations (create, update, delete) are checked against an allowlist before being forwarded. Blocked operations return a clear error message to the agent.
 
-### Why a Separate Proxy?
+### How It Works (TLS MITM)
 
-The network proxy (`claude-proxy`) handles HTTPS via CONNECT tunneling and can only filter by domain. MCP traffic is encrypted inside the TLS tunnel, so inspecting tool calls requires a dedicated application-layer proxy that terminates the MCP protocol.
+The network proxy (`claude-proxy`) handles HTTPS via CONNECT tunneling and normally can only filter by domain. To inspect MCP tool calls inside the encrypted tunnel, it performs TLS MITM (man-in-the-middle) for the configured MCP host: it terminates the TLS connection using a self-signed certificate, pipes the decrypted HTTP to the MCP proxy (`mcp-proxy.js`) for filtering, and the MCP proxy forwards allowed requests to the real upstream over HTTPS. The agent container trusts the MITM CA via `NODE_EXTRA_CA_CERTS`. This keeps the MCP URL unchanged so OAuth authentication works normally.
 
 ### MCP Access Rules Configuration
 
@@ -253,10 +253,9 @@ graph TD
         AzureCLI -->|Injects Bearer Token & Base URL| CodeA
         AzureCLI -->|Injects Bearer Token & Base URL| CodeB
         
-        CodeA -->|HTTP/HTTPS Proxy traffic<br>via 127.0.0.1:8888| ProxyScript
-        CodeB -->|HTTP/HTTPS Proxy traffic<br>via 127.0.0.1:8888| ProxyScript
-        CodeA -->|MCP tool calls<br>via 127.0.0.1:8889| McpProxyScript
-        CodeB -->|MCP tool calls<br>via 127.0.0.1:8889| McpProxyScript
+        CodeA -->|All HTTP/HTTPS traffic<br>via 127.0.0.1:8888| ProxyScript
+        CodeB -->|All HTTP/HTTPS traffic<br>via 127.0.0.1:8888| ProxyScript
+        ProxyScript -->|TLS MITM intercept<br>for MCP host| McpProxyScript
     end
 
     subgraph WAN ["Internet / External Services"]
